@@ -27,7 +27,7 @@ module.exports = {
     'no-console': 'error',
     quotes: [2, 'single', 'avoid-escape'],
     eqeqeq: 'error',
-    'no-shadow': 'error',
+    // 'no-shadow': 'error',
     // 'react-native/no-inline-styles': 0,
     'no-array-constructor': 'error',
     'import/order': 'error',
@@ -38,6 +38,7 @@ module.exports = {
     // 'react/jsx-no-bind': 'error',
     // 'react/jsx-pascal-case': 'error',
     'vars-on-top': 'error',
+    semi: ['error', 'always'],
     // 'redux-complexity/redux-complexity': ['error', { max: 7 }]
   },
 };
