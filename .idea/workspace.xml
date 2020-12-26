@@ -1,17 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="d019efc5-538b-43f9-829f-a08054ca0a54" name="Default Changelist" comment="initial">
-      <change beforePath="$PROJECT_DIR$/.eslintrc.js" beforeDir="false" afterPath="$PROJECT_DIR$/.eslintrc.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/swagger-extract-dto.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/swagger-extract-dto.iml" afterDir="false" />
+    <list default="true" id="d019efc5-538b-43f9-829f-a08054ca0a54" name="Default Changelist" comment="api files generation">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/dist/bundle.js" beforeDir="false" afterPath="$PROJECT_DIR$/dist/bundle.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/package-lock.json" beforeDir="false" afterPath="$PROJECT_DIR$/package-lock.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/package.json" beforeDir="false" afterPath="$PROJECT_DIR$/package.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/cli/swagger-extract-dto.js" beforeDir="false" afterPath="$PROJECT_DIR$/src/cli/swagger-extract-dto.js" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/schema/typescript.js" beforeDir="false" afterPath="$PROJECT_DIR$/src/schema/typescript.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/utilities/omitDeep/omitDeep.js" beforeDir="false" afterPath="$PROJECT_DIR$/src/utilities/omitDeep/omitDeep.js" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -66,7 +59,7 @@
       <option name="presentableId" value="Default" />
       <updated>1608875968227</updated>
       <workItem from="1608875969998" duration="12117000" />
-      <workItem from="1608970071035" duration="8613000" />
+      <workItem from="1608970071035" duration="16575000" />
     </task>
     <task id="LOCAL-00001" summary="initial">
       <created>1608884151866</created>
@@ -75,7 +68,14 @@
       <option name="project" value="LOCAL" />
       <updated>1608884151866</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="api files generation">
+      <created>1608979499791</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1608979499791</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -98,7 +98,8 @@
     <option name="CHECK_NEW_TODO" value="false" />
     <option name="ADD_EXTERNAL_FILES_SILENTLY" value="true" />
     <MESSAGE value="initial" />
-    <option name="LAST_COMMIT_MESSAGE" value="initial" />
+    <MESSAGE value="api files generation" />
+    <option name="LAST_COMMIT_MESSAGE" value="api files generation" />
   </component>
   <component name="XSLT-Support.FileAssociations.UIState">
     <expand />

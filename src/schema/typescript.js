@@ -1,59 +1,35 @@
 /* eslint no-console: 0 */
 import { writeFile } from 'fs';
-// import * as path from 'path'
 import { join } from 'path';
 import { promisify } from 'util';
 import mkdirp from 'mkdirp';
 import ts from 'typescript';
 import rimraf from 'rimraf';
-import { camelCase, get } from 'lodash';
+import { camelCase, get, isEmpty, map } from 'lodash';
+// import { format } from 'prettier';
 
-// import { compile } from 'json-schema-to-typescript'
-// import stringify from 'json-stringify-safe'
 import RefParser from 'json-schema-ref-parser';
-// import { omitDeep } from '../utilities/omitDeep/omitDeep.js'
-// import glob from 'glob';
 
 const rimrafAsync = promisify(rimraf);
 const writeFileAsync = promisify(writeFile);
 
-// export const processFile1 = (filesExt, context) => (file) => {
-//   try {
-//     const fileDirname = dirname(file)
-//     const fileBasename = basename(file, filesExt)
-//     const mainSchema = require(file)
-//     const fileName = join(fileDirname, `${fileBasename}.d.ts`)
-//     const fileNameJson = join(fileDirname, `${fileBasename}.out.json`)
-//     context.count++
-//     const options = {
-//       cwd: fileDirname,
-//       circular: 'ignore'
-//     }
-//     const parser = new RefParser()
-//
-//     parser
-//       .dereference(file, mainSchema, {
-//         circular: 'ignore'
-//       })
-//       .then((jsonSchema) => {
-//         console.log('process', file)
-//         const omitted = omitDeep(jsonSchema, 'vendorExtensions')
-//         omitted.additionalProperties = false
-//         if (jsonSchema.properties) {
-//           omitted.required = Object.keys(omitted.properties)
-//         }
-//         writeFileSync(fileNameJson, stringify(omitted, null, 2))
-//         return omitted
-//       })
-//       .then((omited) => compile(omited, options))
-//       .then((tsText) => {
-//         writeFileSync(fileName, tsText)
-//         console.log('done', fileName)
-//       })
-//   } catch (e) {
-//     console.log(e)
-//   }
-// }
+const { SyntaxKind, ListFormat } = ts;
+
+const {
+  createVariableStatement,
+  createStringLiteral,
+  createVariableDeclaration,
+  createKeywordTypeNode,
+  createModifier,
+  createArrowFunction,
+  createParameterDeclaration,
+  createNoSubstitutionTemplateLiteral,
+  createImportDeclaration,
+  createImportClause,
+  createNamedImports,
+  createImportSpecifier,
+  createIdentifier
+} = ts.factory;
 
 function addPath (path, name) {
   return path ? `${path}.${name}` : name;
@@ -82,56 +58,94 @@ async function writeTsFile (fileName, nodes) {
     true,
     ts.ScriptKind.TS
   );
-  // const content = map(nodes, (node) => printer.printNode(ts.EmitHint.Unspecified, node))
-  // .join('\n');
-  //
-  // await writeFileAsync(fileName, content);
-  const content = printer.printList(ts.ListFormat.SingleLine, nodes, sourceFile);
+
+  const content = printer.printList(
+    ListFormat.MultiLine | ListFormat.SpaceAfterList | ListFormat.PreferNewLine,
+    nodes,
+    sourceFile
+  );
+  // const content = format(code, { parser: 'typescript' });
   await writeFileAsync(fileName, content);
   console.log(`  wrote ${fileName}`);
 }
 
-const {
-  createVariableStatement,
-  createStringLiteral,
-  createVariableDeclaration,
-  createKeywordTypeNode,
-  // createVariableDeclarationList,
-  createModifier
-} = ts.factory;
+function parameterDeclaration (parameter) {
+  return createParameterDeclaration(
+    undefined,
+    undefined,
+    undefined,
+    parameter.name,
+    undefined,
+    undefined,
+    undefined
+  );
+}
 
-const { SyntaxKind } = ts;
+function createImport (libName, names) {
+  return createImportDeclaration(
+    /* decorators */ undefined,
+    /* modifiers */ undefined,
+    createImportClause(
+      undefined,
+      createNamedImports(
+        map(names, (name) => createImportSpecifier(undefined, createIdentifier(name)))
+      )
+    ),
+    createStringLiteral(libName, true)
+  );
+}
 
 async function processApiMethod (apiPath, method, DTOs, targetDir) {
   const baseName = `${camelCase(apiPath)}_${method}`;
   const apiFileName = join(targetDir, `${baseName}.ts`);
   const apiNodes = [];
 
-  // const node = createVariableStatement(
-  //   [createModifier(SyntaxKind.ExportKeyword)],
-  //   createVariableDeclarationList(
-  //     [
-  //       createVariableDeclaration(
-  //         `ENDPOINT_${baseName}`,
-  //         undefined,
-  //         createKeywordTypeNode(SyntaxKind.StringKeyword),
-  //         createStringLiteral(apiPath),
-  //       ),
-  //     ],
-  //     NodeFlags.Const,
-  //   ),
-  // );
-  const node = createVariableStatement(
-    [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
-    createVariableDeclaration(
-      `ENDPOINT_${baseName}`,
-      undefined,
-      createKeywordTypeNode(SyntaxKind.StringKeyword),
-      createStringLiteral(apiPath)
-    )
-  );
+  if (isEmpty(DTOs.path) && isEmpty(DTOs.query)) {
+    const node = createVariableStatement(
+      [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
+      createVariableDeclaration(
+        `ENDPOINT_${baseName}`,
+        undefined,
+        createKeywordTypeNode(SyntaxKind.StringKeyword),
+        createStringLiteral(apiPath, true)
+      )
+    );
 
-  apiNodes.push(node);
+    apiNodes.push(node);
+  } else {
+    const pathApiText = apiPath.replace(/{/g, '${');
+    const parameters = [
+      ...map(DTOs.path, parameterDeclaration),
+      ...map(DTOs.query, parameterDeclaration)
+    ];
+    const apiText = isEmpty(DTOs.query)
+      ? pathApiText
+      : `${pathApiText}?stringify(${'$'}{{${map(DTOs.query, (param) => param.name).join(',')}}})`;
+    console.log({ apiText, parameters });
+
+    if (!isEmpty(DTOs.query)) {
+      apiNodes.push(createImport('query-string', ['stringify']));
+    }
+
+    const node = createVariableStatement(
+      [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
+      createVariableDeclaration(
+        `ENDPOINT_${baseName}`,
+        undefined,
+        undefined,
+        createArrowFunction(
+          [],
+          undefined,
+          parameters,
+          undefined,
+          undefined,
+          createNoSubstitutionTemplateLiteral(apiText, apiText)
+        )
+      )
+    );
+
+    apiNodes.push(node);
+  }
 
   await writeTsFile(apiFileName, apiNodes);
 }

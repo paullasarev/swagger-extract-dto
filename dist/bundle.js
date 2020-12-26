@@ -22,11 +22,27 @@ var rimraf__default = /*#__PURE__*/_interopDefaultLegacy(rimraf);
 var RefParser__default = /*#__PURE__*/_interopDefaultLegacy(RefParser);
 
 /* eslint no-console: 0 */
-// import { omitDeep } from '../utilities/omitDeep/omitDeep.js'
-// import glob from 'glob';
 
 const rimrafAsync = util.promisify(rimraf__default['default']);
 const writeFileAsync = util.promisify(fs.writeFile);
+
+const { SyntaxKind, ListFormat } = ts__default['default'];
+
+const {
+  createVariableStatement,
+  createStringLiteral,
+  createVariableDeclaration,
+  createKeywordTypeNode,
+  createModifier,
+  createArrowFunction,
+  createParameterDeclaration,
+  createNoSubstitutionTemplateLiteral,
+  createImportDeclaration,
+  createImportClause,
+  createNamedImports,
+  createImportSpecifier,
+  createIdentifier
+} = ts__default['default'].factory;
 
 function processParameter (parameter, DTOs) {
   const { name, in: ind } = parameter;
@@ -51,56 +67,94 @@ async function writeTsFile (fileName, nodes) {
     true,
     ts__default['default'].ScriptKind.TS
   );
-  // const content = map(nodes, (node) => printer.printNode(ts.EmitHint.Unspecified, node))
-  // .join('\n');
-  //
-  // await writeFileAsync(fileName, content);
-  const content = printer.printList(ts__default['default'].ListFormat.SingleLine, nodes, sourceFile);
+
+  const content = printer.printList(
+    ListFormat.MultiLine | ListFormat.SpaceAfterList | ListFormat.PreferNewLine,
+    nodes,
+    sourceFile
+  );
+  // const content = format(code, { parser: 'typescript' });
   await writeFileAsync(fileName, content);
   console.log(`  wrote ${fileName}`);
 }
 
-const {
-  createVariableStatement,
-  createStringLiteral,
-  createVariableDeclaration,
-  createKeywordTypeNode,
-  // createVariableDeclarationList,
-  createModifier
-} = ts__default['default'].factory;
+function parameterDeclaration (parameter) {
+  return createParameterDeclaration(
+    undefined,
+    undefined,
+    undefined,
+    parameter.name,
+    undefined,
+    undefined,
+    undefined
+  );
+}
 
-const { SyntaxKind } = ts__default['default'];
+function createImport (libName, names) {
+  return createImportDeclaration(
+    /* decorators */ undefined,
+    /* modifiers */ undefined,
+    createImportClause(
+      undefined,
+      createNamedImports(
+        lodash.map(names, (name) => createImportSpecifier(undefined, createIdentifier(name)))
+      )
+    ),
+    createStringLiteral(libName, true)
+  );
+}
 
 async function processApiMethod (apiPath, method, DTOs, targetDir) {
   const baseName = `${lodash.camelCase(apiPath)}_${method}`;
   const apiFileName = path.join(targetDir, `${baseName}.ts`);
   const apiNodes = [];
 
-  // const node = createVariableStatement(
-  //   [createModifier(SyntaxKind.ExportKeyword)],
-  //   createVariableDeclarationList(
-  //     [
-  //       createVariableDeclaration(
-  //         `ENDPOINT_${baseName}`,
-  //         undefined,
-  //         createKeywordTypeNode(SyntaxKind.StringKeyword),
-  //         createStringLiteral(apiPath),
-  //       ),
-  //     ],
-  //     NodeFlags.Const,
-  //   ),
-  // );
-  const node = createVariableStatement(
-    [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
-    createVariableDeclaration(
-      `ENDPOINT_${baseName}`,
-      undefined,
-      createKeywordTypeNode(SyntaxKind.StringKeyword),
-      createStringLiteral(apiPath)
-    )
-  );
+  if (lodash.isEmpty(DTOs.path) && lodash.isEmpty(DTOs.query)) {
+    const node = createVariableStatement(
+      [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
+      createVariableDeclaration(
+        `ENDPOINT_${baseName}`,
+        undefined,
+        createKeywordTypeNode(SyntaxKind.StringKeyword),
+        createStringLiteral(apiPath, true)
+      )
+    );
 
-  apiNodes.push(node);
+    apiNodes.push(node);
+  } else {
+    const pathApiText = apiPath.replace(/{/g, '${');
+    const parameters = [
+      ...lodash.map(DTOs.path, parameterDeclaration),
+      ...lodash.map(DTOs.query, parameterDeclaration)
+    ];
+    const apiText = lodash.isEmpty(DTOs.query)
+      ? pathApiText
+      : `${pathApiText}?stringify(${'$'}{{${lodash.map(DTOs.query, (param) => param.name).join(',')}}})`;
+    console.log({ apiText, parameters });
+
+    if (!lodash.isEmpty(DTOs.query)) {
+      apiNodes.push(createImport('query-string', ['stringify']));
+    }
+
+    const node = createVariableStatement(
+      [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
+      createVariableDeclaration(
+        `ENDPOINT_${baseName}`,
+        undefined,
+        undefined,
+        createArrowFunction(
+          [],
+          undefined,
+          parameters,
+          undefined,
+          undefined,
+          createNoSubstitutionTemplateLiteral(apiText, apiText)
+        )
+      )
+    );
+
+    apiNodes.push(node);
+  }
 
   await writeTsFile(apiFileName, apiNodes);
 }
