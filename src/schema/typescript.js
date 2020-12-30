@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import mkdirp from 'mkdirp';
 import ts from 'typescript';
 import rimraf from 'rimraf';
-import { camelCase, snakeCase, get, isEmpty, map } from 'lodash';
+import { camelCase, snakeCase, get, isEmpty, map, find } from 'lodash';
 // import { format } from 'prettier';
 
 import RefParser from 'json-schema-ref-parser';
@@ -157,13 +157,20 @@ function makeInterfaceNode (schema, typeContext, name) {
   );
 }
 
+function typeContextAddEnum (typeContext, node) {
+  if (find(typeContext.enums, { name: node.name })) {
+    return;
+  }
+  typeContext.enums.push(node);
+}
+
 function makeTypeNode (parameter, typeContext, parentName = undefined) {
   if (!parameter) {
     return null;
   }
   if (parameter.enum) {
     const enumName = makeTypeName(concatName(typeContext.rootName, parentName));
-    typeContext.enums.push(makeEnumDeclaration(enumName, parameter.enum));
+    typeContextAddEnum(typeContext, makeEnumDeclaration(enumName, parameter.enum));
 
     return createTypeReferenceNode(createIdentifier(enumName));
   }
@@ -286,7 +293,7 @@ function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
     } else {
       parameters.push(makeOptionalAnyParameter('options'));
       apiText = `${pathApiText}?${'${'}stringify({${map(DTOs.query, (param) => param.name).join(
-        ','
+        ', '
       )}}, options)}`;
       typeContext.imports.push(createImport('query-string', ['stringify']));
     }
