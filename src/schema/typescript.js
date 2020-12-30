@@ -181,61 +181,73 @@ function makeStringVariable (name, initValue) {
 function createTypeContext (rootName) {
   return {
     rootName,
-    enums: []
+    enums: [],
+    imports: [],
+    endpointNode: undefined
   };
 }
 
-async function processApiMethod (apiPath, method, DTOs, targetDir) {
-  const baseName = `${camelCase(apiPath)}_${method}`;
-  const apiFileName = join(targetDir, `${baseName}.ts`);
-  const apiNodes = [];
+function makeSubstitutionArrowNode (baseName, parameters, text) {
+  return createVariableStatement(
+    [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
+    createVariableDeclaration(
+      `ENDPOINT_${baseName}`,
+      undefined,
+      undefined,
+      createArrowFunction(
+        [],
+        undefined,
+        parameters,
+        undefined,
+        undefined,
+        createNoSubstitutionTemplateLiteral(text, text)
+      )
+    )
+  );
+}
+
+function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
+  const parameterDeclarationFunc = parameterDeclaration(typeContext);
 
   if (isEmpty(DTOs.path) && isEmpty(DTOs.query)) {
-    const node = makeStringVariable(`ENDPOINT_${baseName}`, apiPath);
-
-    apiNodes.push(node);
+    typeContext.endpointNode = makeStringVariable(`ENDPOINT_${baseName}`, pathApiText);
   } else {
-    const pathApiText = apiPath.replace(/{/g, '${');
-    const typeContext = createTypeContext(pathApiText);
-    const parameterDeclarationFunc = parameterDeclaration(typeContext);
     const parameters = [
       ...map(DTOs.path, parameterDeclarationFunc),
       ...map(DTOs.query, parameterDeclarationFunc)
     ];
 
-    // TODO: process "collectionFormat": "multi" to stringify option
-    const apiText = isEmpty(DTOs.query)
-      ? pathApiText
-      : `${pathApiText}?${'${'}stringify(${map(DTOs.query, (param) => param.name).join(',')})}`;
-
-    if (!isEmpty(DTOs.query)) {
-      apiNodes.push(createImport('query-string', ['stringify']));
+    let apiText;
+    if (isEmpty(DTOs.query)) {
+      apiText = pathApiText;
+    } else {
+      // TODO: process "collectionFormat": "multi" to stringify option
+      apiText = `${pathApiText}?${'${'}stringify(${map(DTOs.query, (param) => param.name).join(
+        ','
+      )})}`;
+      typeContext.imports.push(createImport('query-string', ['stringify']));
     }
-    if (typeContext.enums.length) {
-      apiNodes.push(...typeContext.enums);
-    }
 
-    const node = createVariableStatement(
-      [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
-      createVariableDeclaration(
-        `ENDPOINT_${baseName}`,
-        undefined,
-        undefined,
-        createArrowFunction(
-          [],
-          undefined,
-          parameters,
-          undefined,
-          undefined,
-          createNoSubstitutionTemplateLiteral(apiText, apiText)
-        )
-      )
-    );
-
-    apiNodes.push(node);
+    typeContext.endpointNode = makeSubstitutionArrowNode(baseName, parameters, apiText);
   }
+}
 
-  await writeTsFile(apiFileName, apiNodes);
+async function processApiMethod (baseName, apiPath, DTOs) {
+  const apiNodes = [];
+  const pathApiText = apiPath.replace(/{/g, '${');
+  const typeContext = createTypeContext(pathApiText);
+
+  makeEndpointNodes(typeContext, DTOs, baseName, pathApiText);
+
+  if (typeContext.imports.length) {
+    apiNodes.push(...typeContext.imports);
+  }
+  if (typeContext.enums.length) {
+    apiNodes.push(...typeContext.enums);
+  }
+  apiNodes.push(typeContext.endpointNode);
+
+  return apiNodes;
 }
 
 async function processPaths (root, context, path) {
@@ -259,7 +271,11 @@ async function processPaths (root, context, path) {
       }
       DTOs.response = get(methodNode, 'responses.200');
 
-      await processApiMethod(apiPath, method, DTOs, targetDir);
+      const baseName = `${camelCase(apiPath)}_${method}`;
+      const apiNodes = await processApiMethod(baseName, apiPath, DTOs);
+
+      const apiFileName = join(targetDir, `${baseName}.ts`);
+      await writeTsFile(apiFileName, apiNodes);
     }
   }
 }
