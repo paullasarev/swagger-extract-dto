@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import mkdirp from 'mkdirp';
 import ts from 'typescript';
 import rimraf from 'rimraf';
-import { camelCase, get, isEmpty, map } from 'lodash';
+import { camelCase, snakeCase, get, isEmpty, map } from 'lodash';
 // import { format } from 'prettier';
 
 import RefParser from 'json-schema-ref-parser';
@@ -28,7 +28,14 @@ const {
   createImportClause,
   createNamedImports,
   createImportSpecifier,
-  createIdentifier
+  createIdentifier,
+  createArrayTypeNode,
+  createNumericLiteral,
+  createTrue,
+  createFalse,
+  createEnumDeclaration,
+  createEnumMember,
+  createTypeReferenceNode
 } = ts.factory;
 
 function addPath (path, name) {
@@ -69,17 +76,82 @@ async function writeTsFile (fileName, nodes) {
   console.log(`  wrote ${fileName}`);
 }
 
-function parameterDeclaration (parameter) {
+function concatName (baseName, name) {
+  return baseName ? camelCase(`${baseName}-${name}`) : camelCase(name);
+}
+
+function makeEnumMember (value) {
+  switch (typeof value) {
+    case 'boolean':
+      return value ? createTrue() : createFalse();
+    case 'number':
+      return createNumericLiteral(value);
+    case 'string':
+      return createStringLiteral(value);
+  }
+}
+
+const makeConstantName = (name) => {
+  const prepared = snakeCase(name).toUpperCase();
+  if (/^\d/.test(prepared)) {
+    return `T_${prepared}`;
+  }
+  return prepared;
+};
+
+function makeEnumDeclaration (name, values) {
+  console.log({ values });
+  return createEnumDeclaration(
+    undefined,
+    [createModifier(SyntaxKind.ExportKeyword)],
+    createIdentifier(name),
+    map(values, (value) => {
+      return createEnumMember(makeConstantName(value), makeEnumMember(value));
+    })
+  );
+}
+
+function makeTypeName (name) {
+  return name.substr(0, 1).toUpperCase() + name.substr(1);
+}
+
+function makeTypeNode (parameter, typeContext, parentName = undefined) {
+  if (parameter.enum) {
+    const enumName = makeTypeName(concatName(typeContext.rootName, parentName));
+    typeContext.enums.push(makeEnumDeclaration(enumName, parameter.enum));
+
+    return createTypeReferenceNode(createIdentifier(enumName));
+
+    // return createUnionTypeNode(
+    //   map(parameter.enum, makeEnumMember), //.filter(Boolean),
+    // );
+  }
+  if (parameter.type === 'string') {
+    return createKeywordTypeNode(SyntaxKind.StringKeyword);
+  }
+  if (parameter.type === 'integer') {
+    return createKeywordTypeNode(SyntaxKind.NumberKeyword);
+  }
+  if (parameter.type === 'array') {
+    // return createArrayTypeNode(createParenthesizedType(makeTypeNode(parameter.items)));
+    return createArrayTypeNode(
+      makeTypeNode(parameter.items, typeContext, concatName(parentName, parameter.name))
+    );
+  }
+  return createKeywordTypeNode(SyntaxKind.AnyKeyword);
+}
+
+export const parameterDeclaration = (typeContext) => (parameter) => {
   return createParameterDeclaration(
     undefined,
     undefined,
     undefined,
     parameter.name,
     undefined,
-    undefined,
+    makeTypeNode(parameter, typeContext),
     undefined
   );
-}
+};
 
 function createImport (libName, names) {
   return createImportDeclaration(
@@ -95,36 +167,53 @@ function createImport (libName, names) {
   );
 }
 
+function makeStringVariable (name, initValue) {
+  return createVariableStatement(
+    [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
+    createVariableDeclaration(
+      name,
+      undefined,
+      createKeywordTypeNode(SyntaxKind.StringKeyword),
+      createStringLiteral(initValue, true)
+    )
+  );
+}
+
+function createTypeContext (rootName) {
+  return {
+    rootName,
+    enums: []
+  };
+}
+
 async function processApiMethod (apiPath, method, DTOs, targetDir) {
   const baseName = `${camelCase(apiPath)}_${method}`;
   const apiFileName = join(targetDir, `${baseName}.ts`);
   const apiNodes = [];
 
   if (isEmpty(DTOs.path) && isEmpty(DTOs.query)) {
-    const node = createVariableStatement(
-      [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
-      createVariableDeclaration(
-        `ENDPOINT_${baseName}`,
-        undefined,
-        createKeywordTypeNode(SyntaxKind.StringKeyword),
-        createStringLiteral(apiPath, true)
-      )
-    );
+    const node = makeStringVariable(`ENDPOINT_${baseName}`, apiPath);
 
     apiNodes.push(node);
   } else {
     const pathApiText = apiPath.replace(/{/g, '${');
+    const typeContext = createTypeContext(pathApiText);
+    const parameterDeclarationFunc = parameterDeclaration(typeContext);
     const parameters = [
-      ...map(DTOs.path, parameterDeclaration),
-      ...map(DTOs.query, parameterDeclaration)
+      ...map(DTOs.path, parameterDeclarationFunc),
+      ...map(DTOs.query, parameterDeclarationFunc)
     ];
+
+    // TODO: process "collectionFormat": "multi" to stringify option
     const apiText = isEmpty(DTOs.query)
       ? pathApiText
       : `${pathApiText}?stringify(${'$'}{{${map(DTOs.query, (param) => param.name).join(',')}}})`;
-    console.log({ apiText, parameters });
 
     if (!isEmpty(DTOs.query)) {
       apiNodes.push(createImport('query-string', ['stringify']));
+    }
+    if (typeContext.enums.length) {
+      apiNodes.push(...typeContext.enums);
     }
 
     const node = createVariableStatement(
