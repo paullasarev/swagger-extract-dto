@@ -285,7 +285,15 @@ function makeBodyNodes(typeContext, DTOs, baseName) {
     return;
   }
 
-  makeTypeNode(DTOs.body.schema, typeContext, 'Response');
+  makeTypeNode(DTOs.body.schema, typeContext, 'Body');
+}
+
+function makeResponseNodes(typeContext, DTOs, baseName) {
+  if (!DTOs.response) {
+    return;
+  }
+
+  makeTypeNode(DTOs.response.schema, typeContext, 'Response');
 }
 
 async function processApiMethod(baseName, apiPath, DTOs) {
@@ -295,6 +303,7 @@ async function processApiMethod(baseName, apiPath, DTOs) {
 
   makeEndpointNodes(typeContext, DTOs, baseName, pathApiText);
   makeBodyNodes(typeContext, DTOs);
+  makeResponseNodes(typeContext, DTOs);
 
   if (typeContext.imports.length) {
     apiNodes.push(...typeContext.imports);
