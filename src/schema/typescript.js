@@ -100,7 +100,6 @@ const makeConstantName = (name) => {
 };
 
 function makeEnumDeclaration (name, values) {
-  console.log({ values });
   return createEnumDeclaration(
     undefined,
     [createModifier(SyntaxKind.ExportKeyword)],
@@ -207,7 +206,7 @@ async function processApiMethod (apiPath, method, DTOs, targetDir) {
     // TODO: process "collectionFormat": "multi" to stringify option
     const apiText = isEmpty(DTOs.query)
       ? pathApiText
-      : `${pathApiText}?stringify(${'$'}{{${map(DTOs.query, (param) => param.name).join(',')}}})`;
+      : `${pathApiText}?${'${'}stringify(${map(DTOs.query, (param) => param.name).join(',')})}`;
 
     if (!isEmpty(DTOs.query)) {
       apiNodes.push(createImport('query-string', ['stringify']));
