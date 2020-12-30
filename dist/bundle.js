@@ -54,12 +54,18 @@ const {
   createToken,
 } = ts__default['default'].factory;
 
+function getSchema(parameter) {
+  return lodash.get(parameter, 'schema', parameter);
+}
+
 function processParameter(parameter, DTOs) {
   const { name, in: ind } = parameter;
   if (ind === 'path') {
     DTOs.path[name] = parameter;
   } else if (ind === 'query') {
     DTOs.query[name] = parameter;
+  } else if (ind === 'header') {
+    DTOs.header[name] = parameter;
   } else if (ind === 'body') {
     DTOs.body = parameter;
   }
@@ -158,6 +164,9 @@ function makeInterfaceNode(schema, typeContext, name) {
 }
 
 function makeTypeNode(parameter, typeContext, parentName = undefined) {
+  if (!parameter) {
+    return null;
+  }
   if (parameter.enum) {
     const enumName = makeTypeName(concatName(typeContext.rootName, parentName));
     typeContext.enums.push(makeEnumDeclaration(enumName, parameter.enum));
@@ -194,7 +203,7 @@ const parameterDeclaration = (typeContext) => (parameter) => {
     undefined,
     parameter.name,
     undefined,
-    makeTypeNode(parameter, typeContext),
+    makeTypeNode(getSchema(parameter), typeContext),
     undefined,
   );
 };
@@ -254,6 +263,18 @@ function makeSubstitutionArrowNode(baseName, parameters, text) {
   );
 }
 
+function makeOptionalAnyParameter(name) {
+  return createParameterDeclaration(
+    undefined,
+    undefined,
+    undefined,
+    name,
+    createToken(SyntaxKind.QuestionToken),
+    createKeywordTypeNode(SyntaxKind.AnyKeyword),
+    undefined,
+  );
+}
+
 function makeEndpointNodes(typeContext, DTOs, baseName, pathApiText) {
   const parameterDeclarationFunc = parameterDeclaration(typeContext);
 
@@ -269,10 +290,10 @@ function makeEndpointNodes(typeContext, DTOs, baseName, pathApiText) {
     if (lodash.isEmpty(DTOs.query)) {
       apiText = pathApiText;
     } else {
-      // TODO: process "collectionFormat": "multi" to stringify option
-      apiText = `${pathApiText}?${'${'}stringify(${lodash.map(DTOs.query, (param) => param.name).join(
+      parameters.push(makeOptionalAnyParameter('options'));
+      apiText = `${pathApiText}?${'${'}stringify({${lodash.map(DTOs.query, (param) => param.name).join(
         ',',
-      )})}`;
+      )}}, options)}`;
       typeContext.imports.push(createImport('query-string', ['stringify']));
     }
 
@@ -332,13 +353,23 @@ async function processPaths(root, context, path$1) {
       const DTOs = {
         path: {},
         query: {},
+        header: {},
         body: undefined,
         response: undefined,
       };
-      for (const parameter of methodNode.parameters) {
-        processParameter(parameter, DTOs);
+      if (methodNode.parameters) {
+        for (const parameter of methodNode.parameters) {
+          processParameter(parameter, DTOs);
+        }
       }
-      DTOs.response = lodash.get(methodNode, 'responses.200');
+      if (!DTOs.body) {
+        DTOs.body = lodash.get(methodNode, 'requestBody.content["application/json"]');
+      }
+
+      DTOs.response = lodash.get(methodNode, 'responses.200.content["application/json"]');
+      if (!DTOs.response) {
+        DTOs.response = lodash.get(methodNode, 'responses.200');
+      }
 
       const baseName = `${lodash.camelCase(apiPath)}_${method}`;
       const apiNodes = await processApiMethod(baseName, apiPath, DTOs);
