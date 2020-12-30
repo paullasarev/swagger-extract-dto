@@ -35,7 +35,10 @@ const {
   createFalse,
   createEnumDeclaration,
   createEnumMember,
-  createTypeReferenceNode
+  createTypeReferenceNode,
+  createInterfaceDeclaration,
+  createPropertySignature,
+  createToken
 } = ts.factory;
 
 function addPath (path, name) {
@@ -77,6 +80,9 @@ async function writeTsFile (fileName, nodes) {
 }
 
 function concatName (baseName, name) {
+  if (!name) {
+    return baseName;
+  }
   return baseName ? camelCase(`${baseName}-${name}`) : camelCase(name);
 }
 
@@ -114,16 +120,40 @@ function makeTypeName (name) {
   return name.substr(0, 1).toUpperCase() + name.substr(1);
 }
 
+function makeInterfaceNode (schema, typeContext, name) {
+  // const name = makeTypeName(concatName(typeContext.rootName, parentName));
+
+  const properties = get(schema, ['properties'], {});
+  const props = map(properties, (property, propName) => {
+    // const description = get(schema, ['properties', property], {});
+    // const isRequired = get(schema, ['required'], []).includes(propName);
+    const isRequired = true;
+
+    return createPropertySignature(
+      undefined,
+      createIdentifier(propName),
+      isRequired ? undefined : createToken(SyntaxKind.QuestionToken),
+      makeTypeNode(property, typeContext, propName),
+      undefined
+    );
+  });
+
+  return createInterfaceDeclaration(
+    undefined,
+    [createModifier(SyntaxKind.ExportKeyword)],
+    createIdentifier(name),
+    undefined,
+    undefined,
+    props
+  );
+}
+
 function makeTypeNode (parameter, typeContext, parentName = undefined) {
   if (parameter.enum) {
     const enumName = makeTypeName(concatName(typeContext.rootName, parentName));
     typeContext.enums.push(makeEnumDeclaration(enumName, parameter.enum));
 
     return createTypeReferenceNode(createIdentifier(enumName));
-
-    // return createUnionTypeNode(
-    //   map(parameter.enum, makeEnumMember), //.filter(Boolean),
-    // );
   }
   if (parameter.type === 'string') {
     return createKeywordTypeNode(SyntaxKind.StringKeyword);
@@ -131,11 +161,21 @@ function makeTypeNode (parameter, typeContext, parentName = undefined) {
   if (parameter.type === 'integer') {
     return createKeywordTypeNode(SyntaxKind.NumberKeyword);
   }
+  if (parameter.type === 'boolean') {
+    return createKeywordTypeNode(SyntaxKind.BooleanKeyword);
+  }
   if (parameter.type === 'array') {
     // return createArrayTypeNode(createParenthesizedType(makeTypeNode(parameter.items)));
     return createArrayTypeNode(
       makeTypeNode(parameter.items, typeContext, concatName(parentName, parameter.name))
     );
+  }
+  if (parameter.type === 'object') {
+    const interfaceName = makeTypeName(concatName(typeContext.rootName, parentName));
+    const interfaceNode = makeInterfaceNode(parameter, typeContext, interfaceName);
+    console.log({ interfaceName });
+    typeContext.interfaces.push(interfaceNode);
+    return createTypeReferenceNode(createIdentifier(interfaceName));
   }
   return createKeywordTypeNode(SyntaxKind.AnyKeyword);
 }
@@ -183,6 +223,7 @@ function createTypeContext (rootName) {
     rootName,
     enums: [],
     imports: [],
+    interfaces: [],
     endpointNode: undefined
   };
 }
@@ -232,18 +273,30 @@ function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
   }
 }
 
+function makeBodyNodes (typeContext, DTOs, baseName) {
+  if (!DTOs.body) {
+    return;
+  }
+
+  makeTypeNode(DTOs.body.schema, typeContext, 'Response');
+}
+
 async function processApiMethod (baseName, apiPath, DTOs) {
   const apiNodes = [];
   const pathApiText = apiPath.replace(/{/g, '${');
   const typeContext = createTypeContext(pathApiText);
 
   makeEndpointNodes(typeContext, DTOs, baseName, pathApiText);
+  makeBodyNodes(typeContext, DTOs, baseName);
 
   if (typeContext.imports.length) {
     apiNodes.push(...typeContext.imports);
   }
   if (typeContext.enums.length) {
     apiNodes.push(...typeContext.enums);
+  }
+  if (typeContext.interfaces.length) {
+    apiNodes.push(...typeContext.interfaces);
   }
   apiNodes.push(typeContext.endpointNode);
 
