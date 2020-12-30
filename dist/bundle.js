@@ -79,7 +79,10 @@ async function writeTsFile(fileName, nodes) {
   );
 
   const content = printer.printList(
-    ListFormat.MultiLine | ListFormat.SpaceAfterList | ListFormat.PreferNewLine,
+    ListFormat.MultiLine |
+      ListFormat.PreserveLines |
+      ListFormat.SpaceAfterList |
+      ListFormat.PreferNewLine,
     nodes,
     sourceFile,
   );
@@ -171,7 +174,6 @@ function makeTypeNode(parameter, typeContext, parentName = undefined) {
     return createKeywordTypeNode(SyntaxKind.BooleanKeyword);
   }
   if (parameter.type === 'array') {
-    // return createArrayTypeNode(createParenthesizedType(makeTypeNode(parameter.items)));
     return createArrayTypeNode(
       makeTypeNode(parameter.items, typeContext, concatName(parentName, parameter.name)),
     );
@@ -179,7 +181,6 @@ function makeTypeNode(parameter, typeContext, parentName = undefined) {
   if (parameter.type === 'object') {
     const interfaceName = makeTypeName(concatName(typeContext.rootName, parentName));
     const interfaceNode = makeInterfaceNode(parameter, typeContext, interfaceName);
-    console.log({ interfaceName });
     typeContext.interfaces.push(interfaceNode);
     return createTypeReferenceNode(createIdentifier(interfaceName));
   }
