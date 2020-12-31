@@ -190,11 +190,13 @@ function dereferenceInternalRef (typeContext, ref) {
     return createNull();
   }
 
-  const newTypeContext = makeTypeContext(name, typeContext.rootContext);
-  typeContext.rootContext.definitions[name] = newTypeContext;
+  if (!typeContext.rootContext.definitions[name]) {
+    const newTypeContext = makeTypeContext(name, typeContext.rootContext);
+    typeContext.rootContext.definitions[name] = newTypeContext;
 
-  makeTypeNode(parameter, newTypeContext, name, undefined);
-  typeContext.rootContext.definitions[name].rootContext = null;
+    makeTypeNode(parameter, newTypeContext, name, undefined);
+    typeContext.rootContext.definitions[name].rootContext = null;
+  }
 
   typeContext.imports.push(createImport(`./${name}`, [name]));
 
@@ -418,7 +420,17 @@ function cleanupNodes (nodes) {
   return filter(nodes, (node) => !!node);
 }
 
-async function processPaths (root, rootContext) {
+function getResponseNode (methodNode) {
+  let responsePath = 'responses.200.content["application/json"]';
+  let response = get(methodNode, responsePath);
+  if (!response && has(methodNode, 'responses.200.schema')) {
+    responsePath = 'responses.200';
+    response = get(methodNode, responsePath);
+  }
+  return { response, responsePath };
+}
+
+async function processPaths (root, rootContext, rootPath) {
   const { targetDir } = rootContext;
   for (const apiPath in root) {
     const apiNode = root[apiPath];
@@ -443,16 +455,29 @@ async function processPaths (root, rootContext) {
         DTOs.body = get(methodNode, 'requestBody.content["application/json"]');
       }
 
-      DTOs.response = get(methodNode, 'responses.200.content["application/json"]');
-      if (!DTOs.response && has(methodNode, 'responses.200.schema')) {
-        DTOs.response = get(methodNode, 'responses.200');
+      const { response, responsePath } = getResponseNode(methodNode);
+      if (response) {
+        DTOs.response = response;
       }
+
+      // DTOs.response = get(methodNode, 'responses.200.content["application/json"]');
+      // if (!DTOs.response && has(methodNode, 'responses.200.schema')) {
+      //   DTOs.response = get(methodNode, 'responses.200');
+      // }
 
       const baseName = `${camelCase(apiPath)}_${method}`;
       const apiNodes = await processApiMethod(baseName, apiPath, DTOs, rootContext);
 
       const apiFileName = join(targetDir, `${baseName}.ts`);
       await writeTsFile(apiFileName, apiNodes);
+
+      if (response) {
+        const responseFileName = join(targetDir, `${baseName}_response.schema.json`);
+        const fullResponsePath = `${rootPath}["${apiPath}"].${method}.${responsePath}.schema`;
+        const responseContent = get(rootContext.dereferencedSchema, fullResponsePath);
+        await writeFileAsync(responseFileName, JSON.stringify(responseContent, undefined, 2));
+        console.log(`  wrote ${responseFileName}`);
+      }
     }
   }
   for (const defName in rootContext.definitions) {
@@ -486,7 +511,7 @@ async function processRoot (root, context) {
         break;
       }
       case 'paths': {
-        await processPaths(node, context);
+        await processPaths(node, context, 'paths');
         break;
       }
     }
@@ -497,10 +522,11 @@ export async function traverse (root, context) {
   await processRoot(root, context);
 }
 
-export function makeRootContext (targetDir, jsonSchema) {
+export function makeRootContext (targetDir, jsonSchema, dereferencedSchema) {
   return {
     targetDir,
     jsonSchema,
+    dereferencedSchema,
     definitions: {}
   };
 }
@@ -513,13 +539,14 @@ export async function processFile (apiFile, targetDir) {
     await mkdirp(targetDir);
     console.log('dereference', apiFile);
     const parser = new RefParser();
-    // const jsonSchema = await parser.dereference(apiFile, {
-    const jsonSchema = await parser.parse(apiFile, {
+    const refOptions = {
       dereference: {
         circular: 'ignore'
       }
-    });
-    const rootContext = makeRootContext(targetDir, jsonSchema);
+    };
+    const jsonSchema = await parser.parse(apiFile, refOptions);
+    const dereferencedSchema = await parser.dereference(apiFile, refOptions);
+    const rootContext = makeRootContext(targetDir, jsonSchema, dereferencedSchema);
     console.log('traverse', apiFile);
     await traverse(jsonSchema, rootContext);
 
@@ -527,7 +554,11 @@ export async function processFile (apiFile, targetDir) {
     console.log(`write ${fileName}`);
     await writeFileAsync(
       fileName,
-      JSON.stringify(omit(rootContext, ['definitions', 'jsonSchema', 'nodes']), null, 2)
+      JSON.stringify(
+        omit(rootContext, ['definitions', 'jsonSchema', 'nodes', 'dereferencedSchema']),
+        null,
+        2
+      )
     );
 
     console.log('done');
