@@ -51,7 +51,9 @@ const {
   createTypeReferenceNode,
   createInterfaceDeclaration,
   createPropertySignature,
-  createToken
+  createToken,
+  createNull,
+  createTypeAliasDeclaration
 } = ts__default['default'].factory;
 
 function getSchema (parameter) {
@@ -71,7 +73,8 @@ function processParameter (parameter, DTOs) {
   }
 }
 
-async function writeTsFile (fileName, nodes) {
+async function writeTsFile (fileName, allNodes) {
+  const nodes = cleanupNodes(allNodes);
   const printer = ts__default['default'].createPrinter({
     newLine: ts__default['default'].NewLineKind.LineFeed
   });
@@ -138,17 +141,18 @@ function makeTypeName (name) {
   return name.substr(0, 1).toUpperCase() + name.substr(1);
 }
 
-function makeInterfaceNode (schema, typeContext, name) {
-  // const name = makeTypeName(concatName(typeContext.rootName, parentName));
-
-  const properties = lodash.get(schema, ['properties'], {});
+function makeInterfaceNode (schema, typeContext, rootName, name) {
+  const properties = {
+    ...lodash.get(schema, ['properties'], {}),
+    ...lodash.get(schema, ['additionalProperties'], {})
+  };
   const props = lodash.map(properties, (property, propName) => {
 
     return createPropertySignature(
       undefined,
       createIdentifier(propName),
        undefined ,
-      makeTypeNode(property, typeContext, propName),
+      makeTypeNode(property, typeContext, rootName, propName),
       undefined
     );
   });
@@ -170,12 +174,40 @@ function typeContextAddEnum (typeContext, node) {
   typeContext.enums.push(node);
 }
 
-function makeTypeNode (parameter, typeContext, parentName = undefined) {
+function dereferenceInternalRef (typeContext, ref) {
+  if (ref.substr(0, 2) !== '#/') {
+    console.log('invalid ref', ref);
+    return createNull();
+  }
+  const refPath = ref.replace('#/', '').split(/#?\//);
+  const lastName = lodash.last(refPath);
+  const name = makeTypeName(lodash.camelCase(lastName));
+  const parameter = lodash.get(typeContext.rootContext.jsonSchema, refPath);
+  if (!parameter) {
+    console.log('invalid ref path', ref);
+    return createNull();
+  }
+
+  const newTypeContext = makeTypeContext(name, typeContext.rootContext);
+  typeContext.rootContext.definitions[name] = newTypeContext;
+
+  makeTypeNode(parameter, newTypeContext, name, undefined);
+  typeContext.rootContext.definitions[name].rootContext = null;
+
+  typeContext.imports.push(createImport(`./${name}`, [name]));
+
+  return createTypeReferenceNode(createIdentifier(name));
+}
+
+function makeTypeNode (parameter, typeContext, rootName, parentName) {
   if (!parameter) {
     return null;
   }
+  if (parameter.$ref) {
+    return dereferenceInternalRef(typeContext, parameter.$ref);
+  }
   if (parameter.enum) {
-    const enumName = makeTypeName(concatName(typeContext.rootName, parentName));
+    const enumName = makeTypeName(concatName(rootName, parentName));
     typeContextAddEnum(typeContext, makeEnumDeclaration(enumName, parameter.enum));
 
     return createTypeReferenceNode(createIdentifier(enumName));
@@ -191,12 +223,12 @@ function makeTypeNode (parameter, typeContext, parentName = undefined) {
   }
   if (parameter.type === 'array') {
     return createArrayTypeNode(
-      makeTypeNode(parameter.items, typeContext, concatName(parentName, parameter.name))
+      makeTypeNode(parameter.items, typeContext, rootName, concatName(parentName, parameter.name))
     );
   }
   if (parameter.type === 'object') {
     const interfaceName = makeTypeName(concatName(typeContext.rootName, parentName));
-    const interfaceNode = makeInterfaceNode(parameter, typeContext, interfaceName);
+    const interfaceNode = makeInterfaceNode(parameter, typeContext, rootName, interfaceName);
     typeContext.interfaces.push(interfaceNode);
     return createTypeReferenceNode(createIdentifier(interfaceName));
   }
@@ -210,7 +242,7 @@ const parameterDeclaration = (typeContext) => (parameter) => {
     undefined,
     parameter.name,
     undefined,
-    makeTypeNode(getSchema(parameter), typeContext),
+    makeTypeNode(getSchema(parameter), typeContext, typeContext.rootName, undefined),
     undefined
   );
 };
@@ -241,12 +273,14 @@ function makeStringVariable (name, initValue) {
   );
 }
 
-function createTypeContext (rootName) {
+function makeTypeContext (rootName, rootContext) {
   return {
+    rootContext,
     rootName,
     enums: [],
     imports: [],
     interfaces: [],
+    types: [],
     endpointNode: undefined
   };
 }
@@ -313,7 +347,17 @@ function makeBodyNodes (typeContext, DTOs, baseName) {
     return;
   }
 
-  makeTypeNode(DTOs.body.schema, typeContext, 'Body');
+  const node = makeTypeNode(DTOs.body.schema, typeContext, typeContext.rootName, 'Body');
+  const name = makeTypeName(concatName(typeContext.rootName, 'Body'));
+
+  const typeNode = createTypeAliasDeclaration(
+    undefined,
+    [createModifier(SyntaxKind.ExportKeyword)],
+    createIdentifier(name),
+    undefined,
+    node
+  );
+  typeContext.types.push(typeNode);
 }
 
 function makeResponseNodes (typeContext, DTOs, baseName) {
@@ -321,35 +365,59 @@ function makeResponseNodes (typeContext, DTOs, baseName) {
     return;
   }
 
-  makeTypeNode(DTOs.response.schema, typeContext, 'Response');
+  const node = makeTypeNode(DTOs.response.schema, typeContext, typeContext.rootName, 'Response');
+  const name = makeTypeName(concatName(typeContext.rootName, 'Response'));
+
+  const typeNode = createTypeAliasDeclaration(
+    undefined,
+    [createModifier(SyntaxKind.ExportKeyword)],
+    createIdentifier(name),
+    undefined,
+    node
+  );
+  typeContext.types.push(typeNode);
 }
 
-async function processApiMethod (baseName, apiPath, DTOs) {
+function pushNodes (nodes, list) {
+  if (list.length) {
+    nodes.push(...list);
+  }
+}
+
+async function processApiMethod (baseName, apiPath, DTOs, rootContext) {
   const apiNodes = [];
   const pathApiText = apiPath.replace(/{/g, '${');
-  const typeContext = createTypeContext(pathApiText);
+  const typeContext = makeTypeContext(pathApiText, rootContext);
 
   makeEndpointNodes(typeContext, DTOs, baseName, pathApiText);
   makeBodyNodes(typeContext, DTOs);
   makeResponseNodes(typeContext, DTOs);
 
-  if (typeContext.imports.length) {
-    apiNodes.push(...typeContext.imports);
-  }
-  if (typeContext.enums.length) {
-    apiNodes.push(...typeContext.enums);
-  }
-  if (typeContext.interfaces.length) {
-    apiNodes.push(...typeContext.interfaces);
-  }
+  pushNodes(apiNodes, typeContext.imports);
+  pushNodes(apiNodes, typeContext.enums);
+  pushNodes(apiNodes, typeContext.interfaces);
+  pushNodes(apiNodes, typeContext.types);
+  // if (typeContext.imports.length) {
+  //   apiNodes.push(...typeContext.imports);
+  //   // apiNodes.push(createToken(SyntaxKind.MultiLineCommentTrivia | SyntaxKind.NewLineTrivia));
+  // }
+  // if (typeContext.enums.length) {
+  //   apiNodes.push(...typeContext.enums);
+  // }
+  // if (typeContext.interfaces.length) {
+  //   apiNodes.push(...typeContext.interfaces);
+  // }
   apiNodes.push(typeContext.endpointNode);
 
   return apiNodes;
 }
 
-async function processPaths (root, context, path$1) {
-  context.nodes++;
-  const { targetDir } = context;
+function cleanupNodes (nodes) {
+  return lodash.filter(nodes, (node) => !!node);
+}
+
+async function processPaths (root, rootContext) {
+  const { targetDir } = rootContext;
   for (const apiPath in root) {
     const apiNode = root[apiPath];
     console.log(apiPath);
@@ -374,21 +442,32 @@ async function processPaths (root, context, path$1) {
       }
 
       DTOs.response = lodash.get(methodNode, 'responses.200.content["application/json"]');
-      if (!DTOs.response) {
+      if (!DTOs.response && lodash.has(methodNode, 'responses.200.schema')) {
         DTOs.response = lodash.get(methodNode, 'responses.200');
       }
 
       const baseName = `${lodash.camelCase(apiPath)}_${method}`;
-      const apiNodes = await processApiMethod(baseName, apiPath, DTOs);
+      const apiNodes = await processApiMethod(baseName, apiPath, DTOs, rootContext);
 
       const apiFileName = path.join(targetDir, `${baseName}.ts`);
       await writeTsFile(apiFileName, apiNodes);
     }
   }
+  for (const defName in rootContext.definitions) {
+    const defContext = rootContext.definitions[defName];
+    console.log(defName);
+    const defNodes = [];
+    pushNodes(defNodes, defContext.imports);
+    pushNodes(defNodes, defContext.enums);
+    pushNodes(defNodes, defContext.interfaces);
+    pushNodes(defNodes, defContext.types);
+
+    const defFileName = path.join(targetDir, `${defName}.ts`);
+    await writeTsFile(defFileName, defNodes);
+  }
 }
 
-async function processRoot (root, context, path) {
-  context.nodes++;
+async function processRoot (root, context) {
   for (const key in root) {
     const node = root[key];
     switch (key) {
@@ -416,6 +495,14 @@ async function traverse (root, context) {
   await processRoot(root, context);
 }
 
+function makeRootContext (targetDir, jsonSchema) {
+  return {
+    targetDir,
+    jsonSchema,
+    definitions: {}
+  };
+}
+
 async function processFile (apiFile, targetDir) {
   try {
     console.log('clear dir', targetDir);
@@ -424,19 +511,25 @@ async function processFile (apiFile, targetDir) {
     await mkdirp__default['default'](targetDir);
     console.log('dereference', apiFile);
     const parser = new RefParser__default['default']();
-    const jsonSchema = await parser.dereference(apiFile, {
-      circular: 'ignore'
+    // const jsonSchema = await parser.dereference(apiFile, {
+    const jsonSchema = await parser.parse(apiFile, {
+      dereference: {
+        circular: 'ignore'
+      }
     });
-    const context = { nodes: 0, targetDir };
+    const rootContext = makeRootContext(targetDir, jsonSchema);
     console.log('traverse', apiFile);
-    await traverse(jsonSchema, context);
-    console.log(`processed ${context.nodes} nodes`);
+    await traverse(jsonSchema, rootContext);
 
     const fileName = path.join(targetDir, 'info.json');
     console.log(`write ${fileName}`);
-    await writeFileAsync(fileName, JSON.stringify(context, null, 2));
+    await writeFileAsync(
+      fileName,
+      JSON.stringify(lodash.omit(rootContext, ['definitions', 'jsonSchema', 'nodes']), null, 2)
+    );
 
     console.log('done');
+    console.log('definitions', lodash.keys(rootContext.definitions));
   } catch (e) {
     console.log(e);
   }
