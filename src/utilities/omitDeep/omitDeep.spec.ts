@@ -53,7 +53,7 @@ describe('omit unnecessary object properties', () => {
     });
   });
 
-  xit('should omit pending in not more than MAX level', () => {
+  it('should omit pending in not more than MAX level', () => {
     const obj1 = {
       a0: {
         a1: {
@@ -63,7 +63,7 @@ describe('omit unnecessary object properties', () => {
         },
       },
     };
-    const omited2 = omitDeep(deepFreeze(obj1), 'pending');
+    const omited2 = omitDeep(deepFreeze(obj1), 'pending', 0, 10);
     expect(omited2).toEqual(obj1);
   });
 

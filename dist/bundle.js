@@ -26,8 +26,8 @@ const { reduce, isObject, isArray, map } = require('lodash');
 
 const MAX_DEEP_LEVEL = 100;
 
-function omitDeep (value, allKeys, level = 0) {
-  if (level > MAX_DEEP_LEVEL) {
+function omitDeep(value, allKeys, level = 0, maxLevel = MAX_DEEP_LEVEL) {
+  if (level > maxLevel) {
     return value;
   }
 
@@ -38,7 +38,7 @@ function omitDeep (value, allKeys, level = 0) {
   const keys = isArray(allKeys) ? allKeys : [allKeys];
 
   if (isArray(value)) {
-    return map(value, (item) => omitDeep(item, keys, level + 1));
+    return map(value, (item) => omitDeep(item, keys, level + 1, maxLevel));
   }
 
   if (!isObject(value)) {
@@ -51,17 +51,17 @@ function omitDeep (value, allKeys, level = 0) {
       if (keys.includes(key)) {
         return acc;
       }
-      acc[key] = omitDeep(val, keys, level + 1);
+      acc[key] = omitDeep(val, keys, level + 1, maxLevel);
       return acc;
     },
-    {}
+    {},
   );
 
   return result;
 }
 
 module.exports = {
-  omitDeep
+  omitDeep,
 };
 
 /* eslint no-console: 0 */
