@@ -16,11 +16,16 @@ import {
   last,
   keys,
   filter,
-  omit
+  omit,
+  merge,
+  isArray,
+  partition
 } from 'lodash';
 // import { format } from 'prettier';
 
 import RefParser from 'json-schema-ref-parser';
+
+import { omitDeep } from '../utilities/omitDeep/omitDeep';
 
 const rimrafAsync = promisify(rimraf);
 const writeFileAsync = promisify(writeFile);
@@ -52,7 +57,10 @@ const {
   createPropertySignature,
   createToken,
   createNull,
-  createTypeAliasDeclaration
+  createTypeAliasDeclaration,
+  createHeritageClause,
+  createExpressionWithTypeArguments,
+  createUnionTypeNode
 } = ts.factory;
 
 function getSchema (parameter) {
@@ -140,7 +148,7 @@ function makeTypeName (name) {
   return name.substr(0, 1).toUpperCase() + name.substr(1);
 }
 
-function makeInterfaceNode (schema, typeContext, rootName, name) {
+function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
   const properties = {
     ...get(schema, ['properties'], {}),
     ...get(schema, ['additionalProperties'], {})
@@ -159,12 +167,22 @@ function makeInterfaceNode (schema, typeContext, rootName, name) {
     );
   });
 
+  let heritageClauses;
+  if (extendsNodes) {
+    heritageClauses = [
+      createHeritageClause(
+        SyntaxKind.ExtendsKeyword,
+        map(extendsNodes, (extendNode) => createExpressionWithTypeArguments(extendNode, undefined))
+      )
+    ];
+  }
+
   return createInterfaceDeclaration(
     undefined,
     [createModifier(SyntaxKind.ExportKeyword)],
     createIdentifier(name),
     undefined,
-    undefined,
+    heritageClauses,
     props
   );
 }
@@ -176,39 +194,119 @@ function typeContextAddEnum (typeContext, node) {
   typeContext.enums.push(node);
 }
 
-function dereferenceInternalRef (typeContext, ref) {
+function dereferenceInternalRef (typeContext, ref, useDereferenced = false) {
   if (ref.substr(0, 2) !== '#/') {
     console.log('invalid ref', ref);
-    return createNull();
+    return { parameter: undefined, name: undefined };
   }
   const refPath = ref.replace('#/', '').split(/#?\//);
   const lastName = last(refPath);
   const name = makeTypeName(camelCase(lastName));
-  const parameter = get(typeContext.rootContext.jsonSchema, refPath);
+  const schema = useDereferenced
+    ? typeContext.rootContext.dereferencedSchema
+    : typeContext.rootContext.jsonSchema;
+  const parameter = get(schema, refPath);
+  return { name, parameter };
+}
+
+function addImport (typeContext, libName, names) {
+  const key = JSON.stringify({ libName, names });
+  if (has(typeContext.imported, key)) {
+    return;
+  }
+  const importNode = createImport(libName, names);
+  typeContext.imports.push(importNode);
+  typeContext.imported[key] = importNode;
+}
+
+function isSimpleNode (node) {
+  switch (node.kind) {
+    case SyntaxKind.StringKeyword:
+    case SyntaxKind.NumberKeyword:
+    case SyntaxKind.BooleanKeyword:
+    case SyntaxKind.ArrayType:
+      return true;
+    default:
+      return false;
+  }
+}
+
+function dereferenceInternalRefType (typeContext, ref) {
+  const { name, parameter } = dereferenceInternalRef(typeContext, ref);
   if (!parameter) {
     console.log('invalid ref path', ref);
     return createNull();
   }
-
   if (!typeContext.rootContext.definitions[name]) {
     const newTypeContext = makeTypeContext(name, typeContext.rootContext);
     typeContext.rootContext.definitions[name] = newTypeContext;
 
-    makeTypeNode(parameter, newTypeContext, name, undefined);
+    const node = makeTypeNode(parameter, newTypeContext, name, undefined);
+    if (isSimpleNode(node)) {
+      addType(newTypeContext, name, node);
+    }
     typeContext.rootContext.definitions[name].rootContext = null;
   }
 
-  typeContext.imports.push(createImport(`./${name}`, [name]));
+  addImport(typeContext, `./${name}`, [name]);
 
+  return createIdentifier(name);
+}
+
+function allOfSchema (allOf, typeContext, rootName, parentName) {
+  if (!isArray(allOf)) {
+    return createNull();
+  }
+  if (allOf.length === 1) {
+    return makeTypeNode(allOf[0], typeContext, rootName, parentName);
+  }
+
+  const [extendSchemas, implementSchemas] = partition(allOf, (schema) => !!schema.$ref);
+
+  const extendsNodes = map(extendSchemas, (schema) =>
+    dereferenceInternalRefType(typeContext, schema.$ref)
+  );
+  const implementSchema = merge({}, ...implementSchemas);
+  const implementNode = makeTypeNode(
+    implementSchema,
+    typeContext,
+    rootName,
+    parentName,
+    extendsNodes
+  );
+  return implementNode;
+}
+
+function oneOfSchema (oneOf, typeContext, rootName, parentName) {
+  if (!isArray(oneOf)) {
+    return createNull();
+  }
+  if (oneOf.length === 1) {
+    return makeTypeNode(oneOf[0], typeContext, rootName, parentName);
+  }
+
+  const name = makeTypeName(concatName(rootName, parentName));
+  const node = createUnionTypeNode(
+    map(oneOf, (schema, index) =>
+      makeTypeNode(schema, typeContext, name, `struct${index > 0 ? index : ''}`)
+    )
+  );
+  addType(typeContext, name, node);
   return createTypeReferenceNode(createIdentifier(name));
 }
 
-function makeTypeNode (parameter, typeContext, rootName, parentName) {
+function makeTypeNode (parameter, typeContext, rootName, parentName, extendsNodes = undefined) {
   if (!parameter) {
     return null;
   }
+  if (parameter.allOf) {
+    return allOfSchema(parameter.allOf, typeContext, rootName, parentName);
+  }
+  if (parameter.oneOf) {
+    return oneOfSchema(parameter.oneOf, typeContext, rootName, parentName);
+  }
   if (parameter.$ref) {
-    return dereferenceInternalRef(typeContext, parameter.$ref);
+    return createTypeReferenceNode(dereferenceInternalRefType(typeContext, parameter.$ref));
   }
   if (parameter.enum) {
     const enumName = makeTypeName(concatName(rootName, parentName));
@@ -232,7 +330,13 @@ function makeTypeNode (parameter, typeContext, rootName, parentName) {
   }
   if (parameter.type === 'object') {
     const interfaceName = makeTypeName(concatName(typeContext.rootName, parentName));
-    const interfaceNode = makeInterfaceNode(parameter, typeContext, rootName, interfaceName);
+    const interfaceNode = makeInterfaceNode(
+      parameter,
+      typeContext,
+      rootName,
+      interfaceName,
+      extendsNodes
+    );
     typeContext.interfaces.push(interfaceNode);
     return createTypeReferenceNode(createIdentifier(interfaceName));
   }
@@ -283,8 +387,10 @@ function makeTypeContext (rootName, rootContext) {
     rootName,
     enums: [],
     imports: [],
+    imported: {},
     interfaces: [],
     types: [],
+    allTypes: {},
     endpointNode: undefined
   };
 }
@@ -339,11 +445,27 @@ function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
       apiText = `${pathApiText}?${'${'}stringify({${map(DTOs.query, (param) => param.name).join(
         ', '
       )}}, options)}`;
-      typeContext.imports.push(createImport('query-string', ['stringify']));
+      // typeContext.imports.push(createImport('query-string', ['stringify']));
+      addImport(typeContext, 'query-string', ['stringify']);
     }
 
     typeContext.endpointNode = makeSubstitutionArrowNode(baseName, parameters, apiText);
   }
+}
+
+function addType (typeContext, name, node) {
+  if (has(typeContext.allTypes, name)) {
+    return;
+  }
+  const typeNode = createTypeAliasDeclaration(
+    undefined,
+    [createModifier(SyntaxKind.ExportKeyword)],
+    createIdentifier(name),
+    undefined,
+    node
+  );
+  typeContext.types.push(typeNode);
+  typeContext.allTypes[name] = typeNode;
 }
 
 function makeBodyNodes (typeContext, DTOs, baseName) {
@@ -353,15 +475,7 @@ function makeBodyNodes (typeContext, DTOs, baseName) {
 
   const node = makeTypeNode(DTOs.body.schema, typeContext, typeContext.rootName, 'Body');
   const name = makeTypeName(concatName(typeContext.rootName, 'Body'));
-
-  const typeNode = createTypeAliasDeclaration(
-    undefined,
-    [createModifier(SyntaxKind.ExportKeyword)],
-    createIdentifier(name),
-    undefined,
-    node
-  );
-  typeContext.types.push(typeNode);
+  addType(typeContext, name, node);
 }
 
 function makeResponseNodes (typeContext, DTOs, baseName) {
@@ -372,14 +486,7 @@ function makeResponseNodes (typeContext, DTOs, baseName) {
   const node = makeTypeNode(DTOs.response.schema, typeContext, typeContext.rootName, 'Response');
   const name = makeTypeName(concatName(typeContext.rootName, 'Response'));
 
-  const typeNode = createTypeAliasDeclaration(
-    undefined,
-    [createModifier(SyntaxKind.ExportKeyword)],
-    createIdentifier(name),
-    undefined,
-    node
-  );
-  typeContext.types.push(typeNode);
+  addType(typeContext, name, node);
 }
 
 function pushNodes (nodes, list) {
@@ -401,16 +508,7 @@ async function processApiMethod (baseName, apiPath, DTOs, rootContext) {
   pushNodes(apiNodes, typeContext.enums);
   pushNodes(apiNodes, typeContext.interfaces);
   pushNodes(apiNodes, typeContext.types);
-  // if (typeContext.imports.length) {
-  //   apiNodes.push(...typeContext.imports);
-  //   // apiNodes.push(createToken(SyntaxKind.MultiLineCommentTrivia | SyntaxKind.NewLineTrivia));
-  // }
-  // if (typeContext.enums.length) {
-  //   apiNodes.push(...typeContext.enums);
-  // }
-  // if (typeContext.interfaces.length) {
-  //   apiNodes.push(...typeContext.interfaces);
-  // }
+
   apiNodes.push(typeContext.endpointNode);
 
   return apiNodes;
@@ -459,11 +557,6 @@ async function processPaths (root, rootContext, rootPath) {
       if (response) {
         DTOs.response = response;
       }
-
-      // DTOs.response = get(methodNode, 'responses.200.content["application/json"]');
-      // if (!DTOs.response && has(methodNode, 'responses.200.schema')) {
-      //   DTOs.response = get(methodNode, 'responses.200');
-      // }
 
       const baseName = `${camelCase(apiPath)}_${method}`;
       const apiNodes = await processApiMethod(baseName, apiPath, DTOs, rootContext);
@@ -545,7 +638,13 @@ export async function processFile (apiFile, targetDir) {
       }
     };
     const jsonSchema = await parser.parse(apiFile, refOptions);
-    const dereferencedSchema = await parser.dereference(apiFile, refOptions);
+    const dereferencedSchema1 = await parser.dereference(apiFile, refOptions);
+    const dereferencedSchema = omitDeep(dereferencedSchema1, [
+      'example',
+      // 'format',
+      'description',
+      'xml'
+    ]);
     const rootContext = makeRootContext(targetDir, jsonSchema, dereferencedSchema);
     console.log('traverse', apiFile);
     await traverse(jsonSchema, rootContext);
@@ -569,11 +668,5 @@ export async function processFile (apiFile, targetDir) {
 }
 
 export const generate = (apiFile, targetDir) => {
-  // const pattern = join(targetDir, filesGlob)
-  // console.log('process', pattern)
-  // const files = glob.sync(pattern)
-  // const context = { count: 0 }
-  // files.forEach(processFile(filesExt, context))
   processFile(apiFile, targetDir);
-  // console.log(`process ${context.count} files`)
 };

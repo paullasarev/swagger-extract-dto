@@ -1,6 +1,6 @@
 const { reduce, isObject, isArray, map } = require('lodash');
 
-const MAX_DEEP_LEVEL = 10;
+const MAX_DEEP_LEVEL = 100;
 
 export function omitDeep (value, allKeys, level = 0) {
   if (level > MAX_DEEP_LEVEL) {
