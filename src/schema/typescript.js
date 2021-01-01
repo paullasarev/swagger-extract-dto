@@ -21,7 +21,7 @@ import {
   isArray,
   partition
 } from 'lodash';
-// import { format } from 'prettier';
+import { format } from 'prettier';
 
 import RefParser from 'json-schema-ref-parser';
 
@@ -94,7 +94,7 @@ async function writeTsFile (fileName, allNodes) {
     ts.ScriptKind.TS
   );
 
-  const content = printer.printList(
+  const code = printer.printList(
     ListFormat.MultiLine |
       ListFormat.PreserveLines |
       ListFormat.SpaceAfterList |
@@ -102,7 +102,20 @@ async function writeTsFile (fileName, allNodes) {
     nodes,
     sourceFile
   );
-  // const content = format(code, { parser: 'typescript' });
+  const content = format(code, {
+    parser: 'typescript',
+    bracketSpacing: true,
+    jsxBracketSameLine: false,
+    jsxSingleQuote: false,
+    printWidth: 100,
+    singleQuote: true,
+    trailingComma: 'all',
+    endOfLine: 'auto',
+    useTabs: false,
+    tabWidth: 2,
+    semi: true,
+    arrowParens: 'avoid'
+  });
   await writeFileAsync(fileName, content);
   console.log(`  wrote ${fileName}`);
 }
@@ -114,7 +127,7 @@ function concatName (baseName, name) {
   return baseName ? camelCase(`${baseName}-${name}`) : camelCase(name);
 }
 
-function makeEnumMember (value) {
+function makeEnumFieldValue (value) {
   switch (typeof value) {
     case 'boolean':
       return value ? createTrue() : createFalse();
@@ -125,8 +138,11 @@ function makeEnumMember (value) {
   }
 }
 
-const makeConstantName = (name) => {
+const makeEnumFieldName = (name, index) => {
   const prepared = snakeCase(name).toUpperCase();
+  if (isEmpty(prepared)) {
+    return `VALUE_${index}`;
+  }
   if (/^\d/.test(prepared)) {
     return `T_${prepared}`;
   }
@@ -138,14 +154,18 @@ function makeEnumDeclaration (name, values) {
     undefined,
     [createModifier(SyntaxKind.ExportKeyword)],
     createIdentifier(name),
-    map(values, (value) => {
-      return createEnumMember(makeConstantName(value), makeEnumMember(value));
+    map(values, (value, index) => {
+      return createEnumMember(makeEnumFieldName(value, index), makeEnumFieldValue(value));
     })
   );
 }
 
 function makeTypeName (name) {
   return name.substr(0, 1).toUpperCase() + name.substr(1);
+}
+
+function isIdentifier (name) {
+  return /^[a-zA-Z_$][0-9a-zA-Z_$]+$/.test(name);
 }
 
 function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
@@ -157,10 +177,13 @@ function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
     // const description = get(schema, ['properties', property], {});
     // const isRequired = get(schema, ['required'], []).includes(propName);
     const isRequired = true;
+    const nameNode = isIdentifier(propName)
+      ? createIdentifier(propName)
+      : createStringLiteral(propName);
 
     return createPropertySignature(
       undefined,
-      createIdentifier(propName),
+      nameNode,
       isRequired ? undefined : createToken(SyntaxKind.QuestionToken),
       makeTypeNode(property, typeContext, rootName, propName),
       undefined
@@ -350,7 +373,7 @@ export const parameterDeclaration = (typeContext) => (parameter) => {
     undefined,
     parameter.name,
     undefined,
-    makeTypeNode(getSchema(parameter), typeContext, typeContext.rootName, undefined),
+    makeTypeNode(getSchema(parameter), typeContext, typeContext.rootName, parameter.name),
     undefined
   );
 };

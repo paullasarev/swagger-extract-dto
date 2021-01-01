@@ -11,6 +11,7 @@ var mkdirp = require('mkdirp');
 var ts = require('typescript');
 var rimraf = require('rimraf');
 var lodash = require('lodash');
+var prettier = require('prettier');
 var RefParser = require('json-schema-ref-parser');
 
 function _interopDefaultLegacy (e) { return e && typeof e === 'object' && 'default' in e ? e : { 'default': e }; }
@@ -132,7 +133,7 @@ async function writeTsFile (fileName, allNodes) {
     ts__default['default'].ScriptKind.TS
   );
 
-  const content = printer.printList(
+  const code = printer.printList(
     ListFormat.MultiLine |
       ListFormat.PreserveLines |
       ListFormat.SpaceAfterList |
@@ -140,7 +141,20 @@ async function writeTsFile (fileName, allNodes) {
     nodes,
     sourceFile
   );
-  // const content = format(code, { parser: 'typescript' });
+  const content = prettier.format(code, {
+    parser: 'typescript',
+    bracketSpacing: true,
+    jsxBracketSameLine: false,
+    jsxSingleQuote: false,
+    printWidth: 100,
+    singleQuote: true,
+    trailingComma: 'all',
+    endOfLine: 'auto',
+    useTabs: false,
+    tabWidth: 2,
+    semi: true,
+    arrowParens: 'avoid'
+  });
   await writeFileAsync(fileName, content);
   console.log(`  wrote ${fileName}`);
 }
@@ -152,7 +166,7 @@ function concatName (baseName, name) {
   return baseName ? lodash.camelCase(`${baseName}-${name}`) : lodash.camelCase(name);
 }
 
-function makeEnumMember (value) {
+function makeEnumFieldValue (value) {
   switch (typeof value) {
     case 'boolean':
       return value ? createTrue() : createFalse();
@@ -163,8 +177,11 @@ function makeEnumMember (value) {
   }
 }
 
-const makeConstantName = (name) => {
+const makeEnumFieldName = (name, index) => {
   const prepared = lodash.snakeCase(name).toUpperCase();
+  if (lodash.isEmpty(prepared)) {
+    return `VALUE_${index}`;
+  }
   if (/^\d/.test(prepared)) {
     return `T_${prepared}`;
   }
@@ -176,8 +193,8 @@ function makeEnumDeclaration (name, values) {
     undefined,
     [createModifier(SyntaxKind.ExportKeyword)],
     createIdentifier(name),
-    lodash.map(values, (value) => {
-      return createEnumMember(makeConstantName(value), makeEnumMember(value));
+    lodash.map(values, (value, index) => {
+      return createEnumMember(makeEnumFieldName(value, index), makeEnumFieldValue(value));
     })
   );
 }
@@ -186,16 +203,23 @@ function makeTypeName (name) {
   return name.substr(0, 1).toUpperCase() + name.substr(1);
 }
 
+function isIdentifier (name) {
+  return /^[a-zA-Z_$][0-9a-zA-Z_$]+$/.test(name);
+}
+
 function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
   const properties = {
     ...lodash.get(schema, ['properties'], {}),
     ...lodash.get(schema, ['additionalProperties'], {})
   };
   const props = lodash.map(properties, (property, propName) => {
+    const nameNode = isIdentifier(propName)
+      ? createIdentifier(propName)
+      : createStringLiteral(propName);
 
     return createPropertySignature(
       undefined,
-      createIdentifier(propName),
+      nameNode,
        undefined ,
       makeTypeNode(property, typeContext, rootName, propName),
       undefined
@@ -385,7 +409,7 @@ const parameterDeclaration = (typeContext) => (parameter) => {
     undefined,
     parameter.name,
     undefined,
-    makeTypeNode(getSchema(parameter), typeContext, typeContext.rootName, undefined),
+    makeTypeNode(getSchema(parameter), typeContext, typeContext.rootName, parameter.name),
     undefined
   );
 };
