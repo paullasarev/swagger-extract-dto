@@ -107,7 +107,7 @@ async function writeTsFile (fileName, allNodes) {
     bracketSpacing: true,
     jsxBracketSameLine: false,
     jsxSingleQuote: false,
-    printWidth: 100,
+    printWidth: 150,
     singleQuote: true,
     trailingComma: 'all',
     endOfLine: 'auto',
