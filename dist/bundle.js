@@ -107,7 +107,16 @@ function getSchema (parameter) {
   return lodash.get(parameter, 'schema', parameter);
 }
 
-function processParameter (parameter, DTOs) {
+function makeParameterName (parameter) {
+  return {
+    ...parameter,
+    rawName: parameter.name,
+    name: lodash.camelCase(parameter.name)
+  };
+}
+
+function processParameter (rawParameter, DTOs) {
+  const parameter = makeParameterName(rawParameter);
   const { name, in: ind } = parameter;
   if (ind === 'path') {
     DTOs.path[name] = parameter;
@@ -541,9 +550,9 @@ function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
       apiText = pathApiText;
     } else {
       parameters.push(makeOptionalAnyParameter('options'));
-      apiText = `${pathApiText}?${'${'}stringify({${lodash.map(DTOs.query, (param) => param.name).join(
-        ', '
-      )}}, options)}`;
+      apiText = `${pathApiText}?${'${'}stringify({${lodash.map(DTOs.query, (param) =>
+        param.name === param.rawName ? param.name : `"${param.rawName}": ${param.name}`
+      ).join(', ')}}, options)}`;
       addImport(typeContext, 'query-string', ['stringify'], true);
     }
 
