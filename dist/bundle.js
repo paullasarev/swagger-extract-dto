@@ -26,7 +26,7 @@ const { reduce, isObject, isArray, map } = require('lodash');
 
 const MAX_DEEP_LEVEL = 100;
 
-function omitDeep(value, allKeys, level = 0, maxLevel = MAX_DEEP_LEVEL) {
+function omitDeep (value, allKeys, level = 0, maxLevel = MAX_DEEP_LEVEL) {
   if (level > maxLevel) {
     return value;
   }
@@ -54,14 +54,14 @@ function omitDeep(value, allKeys, level = 0, maxLevel = MAX_DEEP_LEVEL) {
       acc[key] = omitDeep(val, keys, level + 1, maxLevel);
       return acc;
     },
-    {},
+    {}
   );
 
   return result;
 }
 
 module.exports = {
-  omitDeep,
+  omitDeep
 };
 
 /* eslint no-console: 0 */
@@ -69,7 +69,7 @@ module.exports = {
 const rimrafAsync = util.promisify(rimraf__default['default']);
 const writeFileAsync = util.promisify(fs.writeFile);
 
-const { SyntaxKind, ListFormat } = ts__default['default'];
+const { SyntaxKind } = ts__default['default'];
 
 const {
   createVariableStatement,
@@ -94,6 +94,7 @@ const {
   createTypeReferenceNode,
   createInterfaceDeclaration,
   createPropertySignature,
+  createIndexSignature,
   createToken,
   createNull,
   createTypeAliasDeclaration,
@@ -119,7 +120,7 @@ function processParameter (parameter, DTOs) {
   }
 }
 
-async function writeTsFile (fileName, allNodes) {
+function printTsFile (allNodes, fileName) {
   const nodes = cleanupNodes(allNodes);
   const printer = ts__default['default'].createPrinter({
     newLine: ts__default['default'].NewLineKind.LineFeed
@@ -133,14 +134,25 @@ async function writeTsFile (fileName, allNodes) {
     ts__default['default'].ScriptKind.TS
   );
 
-  const code = printer.printList(
-    ListFormat.MultiLine |
-      ListFormat.PreserveLines |
-      ListFormat.SpaceAfterList |
-      ListFormat.PreferNewLine,
-    nodes,
-    sourceFile
-  );
+  const codeList = lodash.map(nodes, (node) => {
+    if (lodash.isString(node)) {
+      return node;
+    }
+    return printer.printNode(ts__default['default'].EmitHint.Unspecified, node, sourceFile);
+  });
+
+  const code =
+    [
+      '/* eslint-disable */',
+      '/**',
+      ' * PLEASE DO NOT MODIFY IT BY HAND',
+      ' * This file was automatically generated',
+      ' */',
+      '',
+      '',
+      ...codeList
+    ].join('\n') + '\n';
+
   const content = prettier.format(code, {
     parser: 'typescript',
     bracketSpacing: true,
@@ -155,6 +167,11 @@ async function writeTsFile (fileName, allNodes) {
     semi: true,
     arrowParens: 'avoid'
   });
+  return content;
+}
+
+async function writeTsFile (fileName, allNodes) {
+  const content = printTsFile(allNodes, fileName);
   await writeFileAsync(fileName, content);
   console.log(`  wrote ${fileName}`);
 }
@@ -207,6 +224,24 @@ function isIdentifier (name) {
   return /^[a-zA-Z_$][0-9a-zA-Z_$]+$/.test(name);
 }
 
+function makeKStringNode () {
+  const param = createParameterDeclaration(
+    undefined,
+    undefined,
+    undefined,
+    'k',
+    undefined,
+    createKeywordTypeNode(SyntaxKind.StringKeyword),
+    undefined
+  );
+  return createIndexSignature(
+    undefined,
+    undefined,
+    [param],
+    createKeywordTypeNode(SyntaxKind.AnyKeyword)
+  );
+}
+
 function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
   const properties = {
     ...lodash.get(schema, ['properties'], {}),
@@ -221,10 +256,12 @@ function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
       undefined,
       nameNode,
        undefined ,
-      makeTypeNode(property, typeContext, rootName, propName),
-      undefined
+      makeTypeNode(property, typeContext, rootName, propName)
     );
   });
+  if (!props.length) {
+    props.push(makeKStringNode());
+  }
 
   let heritageClauses;
   if (extendsNodes) {
@@ -268,7 +305,7 @@ function dereferenceInternalRef (typeContext, ref, useDereferenced = false) {
   return { name, parameter };
 }
 
-function addImport (typeContext, libName, names) {
+function addImport (typeContext, libName, names, addNewLine = false) {
   const key = JSON.stringify({ libName, names });
   if (lodash.has(typeContext.imported, key)) {
     return;
@@ -276,6 +313,9 @@ function addImport (typeContext, libName, names) {
   const importNode = createImport(libName, names);
   typeContext.imports.push(importNode);
   typeContext.imported[key] = importNode;
+  if (addNewLine) {
+    typeContext.imports.push('\n');
+  }
 }
 
 function isSimpleNode (node) {
@@ -504,8 +544,7 @@ function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
       apiText = `${pathApiText}?${'${'}stringify({${lodash.map(DTOs.query, (param) => param.name).join(
         ', '
       )}}, options)}`;
-      // typeContext.imports.push(createImport('query-string', ['stringify']));
-      addImport(typeContext, 'query-string', ['stringify']);
+      addImport(typeContext, 'query-string', ['stringify'], true);
     }
 
     typeContext.endpointNode = makeSubstitutionArrowNode(baseName, parameters, apiText);
@@ -532,7 +571,7 @@ function makeBodyNodes (typeContext, DTOs, baseName) {
     return;
   }
 
-  const node = makeTypeNode(DTOs.body.schema, typeContext, typeContext.rootName, 'Body');
+  const node = makeTypeNode(DTOs.body.schema, typeContext, typeContext.rootName, 'ApiBody');
   const name = makeTypeName(concatName(typeContext.rootName, 'Body'));
   addType(typeContext, name, node);
 }
@@ -542,21 +581,27 @@ function makeResponseNodes (typeContext, DTOs, baseName) {
     return;
   }
 
-  const node = makeTypeNode(DTOs.response.schema, typeContext, typeContext.rootName, 'Response');
+  const node = makeTypeNode(DTOs.response.schema, typeContext, typeContext.rootName, 'ApiResponse');
   const name = makeTypeName(concatName(typeContext.rootName, 'Response'));
 
   addType(typeContext, name, node);
 }
 
-function pushNodes (nodes, list) {
+function pushNodes (nodes, list, addNewLine = false) {
   if (list.length) {
-    nodes.push(...list);
+    for (const item of list) {
+      nodes.push(item);
+      if (addNewLine) {
+        nodes.push('\n');
+      }
+    }
   }
 }
 
 async function processApiMethod (baseName, apiPath, DTOs, rootContext) {
   const apiNodes = [];
   const pathApiText = apiPath.replace(/{/g, '${');
+  // const rootName = pathApiText ?
   const typeContext = makeTypeContext(pathApiText, rootContext);
 
   makeEndpointNodes(typeContext, DTOs, baseName, pathApiText);
@@ -564,10 +609,12 @@ async function processApiMethod (baseName, apiPath, DTOs, rootContext) {
   makeResponseNodes(typeContext, DTOs);
 
   pushNodes(apiNodes, typeContext.imports);
-  pushNodes(apiNodes, typeContext.enums);
-  pushNodes(apiNodes, typeContext.interfaces);
-  pushNodes(apiNodes, typeContext.types);
+  apiNodes.push('\n');
+  pushNodes(apiNodes, typeContext.enums, true);
+  pushNodes(apiNodes, typeContext.interfaces, true);
+  pushNodes(apiNodes, typeContext.types, true);
 
+  apiNodes.push('\n');
   apiNodes.push(typeContext.endpointNode);
 
   return apiNodes;
@@ -577,12 +624,26 @@ function cleanupNodes (nodes) {
   return lodash.filter(nodes, (node) => !!node);
 }
 
+function getSchemaNode (node, path) {
+  if (lodash.has(node, `${path}.schema`)) {
+    return lodash.get(node, path);
+  }
+  return undefined;
+}
+
 function getResponseNode (methodNode) {
   let responsePath = 'responses.200.content["application/json"]';
-  let response = lodash.get(methodNode, responsePath);
-  if (!response && lodash.has(methodNode, 'responses.200.schema')) {
+  let response = getSchemaNode(methodNode, responsePath);
+  if (!response) {
+    responsePath = 'responses.200.content["*/*"]';
+    response = getSchemaNode(methodNode, responsePath);
+  }
+  if (!response) {
     responsePath = 'responses.200';
-    response = lodash.get(methodNode, responsePath);
+    response = getSchemaNode(methodNode, responsePath);
+  }
+  if (!response) {
+    responsePath = undefined;
   }
   return { response, responsePath };
 }
@@ -637,9 +698,10 @@ async function processPaths (root, rootContext, rootPath) {
     console.log(defName);
     const defNodes = [];
     pushNodes(defNodes, defContext.imports);
-    pushNodes(defNodes, defContext.enums);
-    pushNodes(defNodes, defContext.interfaces);
-    pushNodes(defNodes, defContext.types);
+    defNodes.push('\n');
+    pushNodes(defNodes, defContext.enums, true);
+    pushNodes(defNodes, defContext.interfaces, true);
+    pushNodes(defNodes, defContext.types, true);
 
     const defFileName = path.join(targetDir, `${defName}.ts`);
     await writeTsFile(defFileName, defNodes);
