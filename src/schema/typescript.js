@@ -77,7 +77,7 @@ function makeParameterName (parameter) {
   };
 }
 
-function processParameter (rawParameter, DTOs) {
+export function processParameter (rawParameter, DTOs) {
   const parameter = makeParameterName(rawParameter);
   const { name, in: ind } = parameter;
   if (ind === 'path') {
@@ -195,7 +195,7 @@ function isIdentifier (name) {
   return /^[a-zA-Z_$][0-9a-zA-Z_$]+$/.test(name);
 }
 
-function makeKStringNode () {
+function makeKStringNode (additionalProperties = undefined) {
   const param = createParameterDeclaration(
     undefined,
     undefined,
@@ -213,15 +213,21 @@ function makeKStringNode () {
   );
 }
 
-function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
-  const properties = {
-    ...get(schema, ['properties'], {}),
-    ...get(schema, ['additionalProperties'], {})
-  };
-  const props = map(properties, (property, propName) => {
-    // const description = get(schema, ['properties', property], {});
-    // const isRequired = get(schema, ['required'], []).includes(propName);
-    const isRequired = true;
+export function getHeritageClauses (extendsNodes) {
+  if (!extendsNodes) {
+    return undefined;
+  }
+  return [
+    createHeritageClause(
+      SyntaxKind.ExtendsKeyword,
+      map(extendsNodes, (extendNode) => createExpressionWithTypeArguments(extendNode, undefined))
+    )
+  ];
+}
+
+export function getPropertyNodeExtractor (schema, typeContext, rootName) {
+  return (property, propName) => {
+    const isRequired = get(schema, ['required'], []).includes(propName);
     const nameNode = isIdentifier(propName)
       ? createIdentifier(propName)
       : createStringLiteral(propName);
@@ -232,20 +238,21 @@ function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
       isRequired ? undefined : createToken(SyntaxKind.QuestionToken),
       makeTypeNode(property, typeContext, rootName, propName)
     );
-  });
+  };
+}
+
+export function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
+  const additionalProperties = get(schema, ['additionalProperties']);
+  const properties = {
+    ...get(schema, ['properties'], {})
+  };
+  const props = map(properties, getPropertyNodeExtractor(schema, typeContext, rootName));
+
   if (!props.length) {
-    props.push(makeKStringNode());
+    props.push(makeKStringNode(additionalProperties));
   }
 
-  let heritageClauses;
-  if (extendsNodes) {
-    heritageClauses = [
-      createHeritageClause(
-        SyntaxKind.ExtendsKeyword,
-        map(extendsNodes, (extendNode) => createExpressionWithTypeArguments(extendNode, undefined))
-      )
-    ];
-  }
+  const heritageClauses = getHeritageClauses(extendsNodes);
 
   return createInterfaceDeclaration(
     undefined,
@@ -422,7 +429,7 @@ export const parameterDeclaration = (typeContext) => (parameter) => {
     undefined,
     undefined,
     parameter.name,
-    undefined,
+    parameter.required ? undefined : createToken(SyntaxKind.QuestionToken),
     makeTypeNode(getSchema(parameter), typeContext, typeContext.rootName, parameter.name),
     undefined
   );
@@ -454,7 +461,7 @@ function makeStringVariable (name, initValue) {
   );
 }
 
-function makeTypeContext (rootName, rootContext) {
+export function makeTypeContext (rootName, rootContext) {
   return {
     rootContext,
     rootName,
@@ -499,7 +506,7 @@ function makeOptionalAnyParameter (name) {
   );
 }
 
-function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
+export function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
   const parameterDeclarationFunc = parameterDeclaration(typeContext);
 
   if (isEmpty(DTOs.path) && isEmpty(DTOs.query)) {
@@ -523,6 +530,7 @@ function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
 
     typeContext.endpointNode = makeSubstitutionArrowNode(baseName, parameters, apiText);
   }
+  return typeContext.endpointNode;
 }
 
 function addType (typeContext, name, node) {
@@ -540,7 +548,7 @@ function addType (typeContext, name, node) {
   typeContext.allTypes[name] = typeNode;
 }
 
-function makeBodyNodes (typeContext, DTOs, baseName) {
+export function makeBodyNodes (typeContext, DTOs, baseName) {
   if (!DTOs.body) {
     return;
   }
@@ -550,7 +558,7 @@ function makeBodyNodes (typeContext, DTOs, baseName) {
   addType(typeContext, name, node);
 }
 
-function makeResponseNodes (typeContext, DTOs, baseName) {
+export function makeResponseNodes (typeContext, DTOs, baseName) {
   if (!DTOs.response) {
     return;
   }
@@ -572,9 +580,13 @@ function pushNodes (nodes, list, addNewLine = false) {
   }
 }
 
+export function makeApiPathText (apiPath) {
+  return apiPath.replace(/{/g, '${');
+}
+
 async function processApiMethod (baseName, apiPath, DTOs, rootContext) {
   const apiNodes = [];
-  const pathApiText = apiPath.replace(/{/g, '${');
+  const pathApiText = makeApiPathText(apiPath);
   // const rootName = pathApiText ?
   const typeContext = makeTypeContext(pathApiText, rootContext);
 
@@ -622,6 +634,32 @@ export function getResponseNode (methodNode) {
   return { response, responsePath };
 }
 
+export function makeDTOs (methodNode) {
+  const DTOs = {
+    path: {},
+    query: {},
+    header: {},
+    body: undefined,
+    response: undefined,
+    responsePath: undefined
+  };
+  if (methodNode.parameters) {
+    for (const parameter of methodNode.parameters) {
+      processParameter(parameter, DTOs);
+    }
+  }
+  if (!DTOs.body) {
+    DTOs.body = get(methodNode, 'requestBody.content["application/json"]');
+  }
+
+  const { response, responsePath } = getResponseNode(methodNode);
+  if (response) {
+    DTOs.response = response;
+    DTOs.responsePath = responsePath;
+  }
+  return DTOs;
+}
+
 async function processPaths (root, rootContext, rootPath) {
   const { targetDir } = rootContext;
   for (const apiPath in root) {
@@ -631,26 +669,7 @@ async function processPaths (root, rootContext, rootPath) {
     for (const method in apiNode) {
       const methodNode = apiNode[method];
 
-      const DTOs = {
-        path: {},
-        query: {},
-        header: {},
-        body: undefined,
-        response: undefined
-      };
-      if (methodNode.parameters) {
-        for (const parameter of methodNode.parameters) {
-          processParameter(parameter, DTOs);
-        }
-      }
-      if (!DTOs.body) {
-        DTOs.body = get(methodNode, 'requestBody.content["application/json"]');
-      }
-
-      const { response, responsePath } = getResponseNode(methodNode);
-      if (response) {
-        DTOs.response = response;
-      }
+      const DTOs = makeDTOs(methodNode);
 
       const baseName = `${camelCase(apiPath)}_${method}`;
       const apiNodes = await processApiMethod(baseName, apiPath, DTOs, rootContext);
@@ -658,9 +677,9 @@ async function processPaths (root, rootContext, rootPath) {
       const apiFileName = join(targetDir, `${baseName}.ts`);
       await writeTsFile(apiFileName, apiNodes);
 
-      if (response) {
+      if (DTOs.response) {
         const responseFileName = join(targetDir, `${baseName}_response.schema.json`);
-        const fullResponsePath = `${rootPath}["${apiPath}"].${method}.${responsePath}.schema`;
+        const fullResponsePath = `${rootPath}["${apiPath}"].${method}.${DTOs.responsePath}.schema`;
         const responseContent = get(rootContext.dereferencedSchema, fullResponsePath);
         await writeFileAsync(responseFileName, JSON.stringify(responseContent, undefined, 2));
         console.log(`  wrote ${responseFileName}`);

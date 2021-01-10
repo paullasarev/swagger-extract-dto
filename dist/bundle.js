@@ -233,7 +233,7 @@ function isIdentifier (name) {
   return /^[a-zA-Z_$][0-9a-zA-Z_$]+$/.test(name);
 }
 
-function makeKStringNode () {
+function makeKStringNode (additionalProperties = undefined) {
   const param = createParameterDeclaration(
     undefined,
     undefined,
@@ -251,12 +251,21 @@ function makeKStringNode () {
   );
 }
 
-function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
-  const properties = {
-    ...lodash.get(schema, ['properties'], {}),
-    ...lodash.get(schema, ['additionalProperties'], {})
-  };
-  const props = lodash.map(properties, (property, propName) => {
+function getHeritageClauses (extendsNodes) {
+  if (!extendsNodes) {
+    return undefined;
+  }
+  return [
+    createHeritageClause(
+      SyntaxKind.ExtendsKeyword,
+      lodash.map(extendsNodes, (extendNode) => createExpressionWithTypeArguments(extendNode, undefined))
+    )
+  ];
+}
+
+function getPropertyNodeExtractor (schema, typeContext, rootName) {
+  return (property, propName) => {
+    const isRequired = lodash.get(schema, ['required'], []).includes(propName);
     const nameNode = isIdentifier(propName)
       ? createIdentifier(propName)
       : createStringLiteral(propName);
@@ -264,23 +273,24 @@ function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
     return createPropertySignature(
       undefined,
       nameNode,
-       undefined ,
+      isRequired ? undefined : createToken(SyntaxKind.QuestionToken),
       makeTypeNode(property, typeContext, rootName, propName)
     );
-  });
+  };
+}
+
+function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
+  const additionalProperties = lodash.get(schema, ['additionalProperties']);
+  const properties = {
+    ...lodash.get(schema, ['properties'], {})
+  };
+  const props = lodash.map(properties, getPropertyNodeExtractor(schema, typeContext, rootName));
+
   if (!props.length) {
-    props.push(makeKStringNode());
+    props.push(makeKStringNode(additionalProperties));
   }
 
-  let heritageClauses;
-  if (extendsNodes) {
-    heritageClauses = [
-      createHeritageClause(
-        SyntaxKind.ExtendsKeyword,
-        lodash.map(extendsNodes, (extendNode) => createExpressionWithTypeArguments(extendNode, undefined))
-      )
-    ];
-  }
+  const heritageClauses = getHeritageClauses(extendsNodes);
 
   return createInterfaceDeclaration(
     undefined,
@@ -457,7 +467,7 @@ const parameterDeclaration = (typeContext) => (parameter) => {
     undefined,
     undefined,
     parameter.name,
-    undefined,
+    parameter.required ? undefined : createToken(SyntaxKind.QuestionToken),
     makeTypeNode(getSchema(parameter), typeContext, typeContext.rootName, parameter.name),
     undefined
   );
@@ -558,6 +568,7 @@ function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
 
     typeContext.endpointNode = makeSubstitutionArrowNode(baseName, parameters, apiText);
   }
+  return typeContext.endpointNode;
 }
 
 function addType (typeContext, name, node) {
@@ -607,9 +618,13 @@ function pushNodes (nodes, list, addNewLine = false) {
   }
 }
 
+function makeApiPathText (apiPath) {
+  return apiPath.replace(/{/g, '${');
+}
+
 async function processApiMethod (baseName, apiPath, DTOs, rootContext) {
   const apiNodes = [];
-  const pathApiText = apiPath.replace(/{/g, '${');
+  const pathApiText = makeApiPathText(apiPath);
   // const rootName = pathApiText ?
   const typeContext = makeTypeContext(pathApiText, rootContext);
 
@@ -657,6 +672,32 @@ function getResponseNode (methodNode) {
   return { response, responsePath };
 }
 
+function makeDTOs (methodNode) {
+  const DTOs = {
+    path: {},
+    query: {},
+    header: {},
+    body: undefined,
+    response: undefined,
+    responsePath: undefined
+  };
+  if (methodNode.parameters) {
+    for (const parameter of methodNode.parameters) {
+      processParameter(parameter, DTOs);
+    }
+  }
+  if (!DTOs.body) {
+    DTOs.body = lodash.get(methodNode, 'requestBody.content["application/json"]');
+  }
+
+  const { response, responsePath } = getResponseNode(methodNode);
+  if (response) {
+    DTOs.response = response;
+    DTOs.responsePath = responsePath;
+  }
+  return DTOs;
+}
+
 async function processPaths (root, rootContext, rootPath) {
   const { targetDir } = rootContext;
   for (const apiPath in root) {
@@ -666,26 +707,7 @@ async function processPaths (root, rootContext, rootPath) {
     for (const method in apiNode) {
       const methodNode = apiNode[method];
 
-      const DTOs = {
-        path: {},
-        query: {},
-        header: {},
-        body: undefined,
-        response: undefined
-      };
-      if (methodNode.parameters) {
-        for (const parameter of methodNode.parameters) {
-          processParameter(parameter, DTOs);
-        }
-      }
-      if (!DTOs.body) {
-        DTOs.body = lodash.get(methodNode, 'requestBody.content["application/json"]');
-      }
-
-      const { response, responsePath } = getResponseNode(methodNode);
-      if (response) {
-        DTOs.response = response;
-      }
+      const DTOs = makeDTOs(methodNode);
 
       const baseName = `${lodash.camelCase(apiPath)}_${method}`;
       const apiNodes = await processApiMethod(baseName, apiPath, DTOs, rootContext);
@@ -693,9 +715,9 @@ async function processPaths (root, rootContext, rootPath) {
       const apiFileName = path.join(targetDir, `${baseName}.ts`);
       await writeTsFile(apiFileName, apiNodes);
 
-      if (response) {
+      if (DTOs.response) {
         const responseFileName = path.join(targetDir, `${baseName}_response.schema.json`);
-        const fullResponsePath = `${rootPath}["${apiPath}"].${method}.${responsePath}.schema`;
+        const fullResponsePath = `${rootPath}["${apiPath}"].${method}.${DTOs.responsePath}.schema`;
         const responseContent = lodash.get(rootContext.dereferencedSchema, fullResponsePath);
         await writeFileAsync(responseFileName, JSON.stringify(responseContent, undefined, 2));
         console.log(`  wrote ${responseFileName}`);
