@@ -7,7 +7,7 @@ export default [
   {
     input: 'src/cli/swagger-extract-dto.js',
     output: {
-      file: 'dist/bundle.js',
+      file: 'dist/swagger-extract-dto.js',
       format: 'cjs',
     },
     plugins: [

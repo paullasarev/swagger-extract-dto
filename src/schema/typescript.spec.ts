@@ -167,7 +167,7 @@ describe('processApiMethod', () => {
     security: [{ petstore_auth: ['write:pets', 'read:pets'] }],
   };
   const rootContext = makeRootContext('.', {}, {});
-  const DTOs = makeDTOs(schemaPostUploadImage);
+  const DTOs = makeDTOs(rootContext, schemaPostUploadImage);
 
   describe('makeEndpointNodes', () => {
     const typeContext = makeTypeContext('', rootContext);
@@ -185,6 +185,70 @@ describe('processApiMethod', () => {
     });
     it('should create non-required params', () => {
       expect(get(parameters[2], 'questionToken')).toBeDefined();
+    });
+  });
+});
+
+describe('processApiMethod', () => {
+  const pathUploadImage = '/pet/{petId}/uploadImage';
+  const pathApiText = makeApiPathText(pathUploadImage);
+  const schema = {
+    get: {
+      parameters: [
+        {
+          $ref: '#/components/parameters/enterprise',
+        },
+        {
+          $ref: '#/components/parameters/per_page',
+        },
+        {
+          $ref: '#/components/parameters/page',
+        },
+      ],
+    },
+    components: {
+      parameters: {
+        enterprise: {
+          name: 'enterprise',
+          description:
+            'The slug version of the enterprise name. You can also substitute this value with the enterprise id.',
+          in: 'path',
+          required: true,
+          schema: {
+            type: 'string',
+          },
+        },
+        per_page: {
+          name: 'per_page',
+          description: 'Results per page (max 100)',
+          in: 'query',
+          schema: {
+            type: 'integer',
+            default: 30,
+          },
+        },
+        page: {
+          name: 'page',
+          description: 'Page number of the results to fetch.',
+          in: 'query',
+          schema: {
+            type: 'integer',
+            default: 1,
+          },
+        },
+      },
+    },
+  };
+  const rootContext = makeRootContext('.', schema, schema);
+  const DTOs = makeDTOs(rootContext, schema.get);
+
+  describe('makeEndpointNodes', () => {
+    const typeContext = makeTypeContext('', rootContext);
+    const node = makeEndpointNodes(typeContext, DTOs, 'get', pathApiText);
+    const parameters = get(node, 'declarationList.initializer.parameters');
+    it('should create params for refs', () => {
+      expect(parameters).toBeDefined();
+      expect(parameters.length).toBe(4);
     });
   });
 });

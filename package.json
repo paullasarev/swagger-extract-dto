@@ -2,7 +2,7 @@
   "name": "swagger-extract-dto",
   "version": "1.0.0",
   "description": "extract DTO definitions from swagger json file",
-  "main": "dist/bundle.js",
+  "main": "dist/swagger-extract-dto.js",
   "scripts": {
     "preinstall": "rollup -v",
     "xbuild:dev": "rollup -c",
@@ -12,17 +12,17 @@
     "build": "rollup -c",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:petstore": "npx ./dist/bundle.js -f ./src/sample/petstore.json -o ./tmp/petstore",
-    "test:github": "npx ./dist/bundle.js -f ./src/sample/ghes-2.22.json -o ./tmp/github",
-    "test:bitbucket": "npx ./dist/bundle.js -f ./src/sample/bitbucket.json -o ./tmp/bitbucket",
-    "test:gitlab": "npx ./dist/bundle.js -f ./src/sample/gitlab.json -o ./tmp/gitlab",
-    "test:heroku": "npx ./dist/bundle.js -f ./src/sample/heroku.json -o ./tmp/heroku",
-    "test:linkedin": "npx ./dist/bundle.js -f ./src/sample/linkedin.json -o ./tmp/linkedin",
+    "test:petstore": "npx ./dist/swagger-extract-dto.js -j -f ./src/sample/petstore.json -o ./tmp/petstore ",
+    "test:github": "npx ./dist/swagger-extract-dto.js -j -f ./src/sample/ghes-2.22.json -o ./tmp/github",
+    "test:bitbucket": "npx ./dist/swagger-extract-dto.js -j -f ./src/sample/bitbucket.json -o ./tmp/bitbucket",
+    "test:gitlab": "npx ./dist/swagger-extract-dto.js -j -f ./src/sample/gitlab.json -o ./tmp/gitlab",
+    "test:heroku": "npx ./dist/swagger-extract-dto.js -j -f ./src/sample/heroku.json -o ./tmp/heroku",
+    "test:linkedin": "npx ./dist/swagger-extract-dto.js -j -f ./src/sample/linkedin.json -o ./tmp/linkedin",
     "lint": "eslint ./src --ext .js,.jsx",
     "lint:fix": "eslint ./src --ext .js,.jsx --fix"
   },
   "bin": {
-    "swagger-extract-dto": "src/cli/bundle.js"
+    "swagger-extract-dto": "dist/swagger-extract-dto.js"
   },
   "repository": {
     "type": "git",

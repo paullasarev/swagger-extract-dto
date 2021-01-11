@@ -1,7 +1,5 @@
 'use strict';
 
-Object.defineProperty(exports, '__esModule', { value: true });
-
 var path = require('path');
 var yargs = require('yargs/yargs');
 var helpers = require('yargs/helpers');
@@ -115,8 +113,13 @@ function makeParameterName (parameter) {
   };
 }
 
-function processParameter (rawParameter, DTOs) {
-  const parameter = makeParameterName(rawParameter);
+function processParameter (rootContext, rawParameter, DTOs) {
+  let param = { ...rawParameter };
+  if (param.$ref) {
+    const { name, parameter } = dereferenceInternalRef(rootContext, param.$ref, true);
+    param = { ...parameter, name };
+  }
+  const parameter = makeParameterName(param);
   const { name, in: ind } = parameter;
   if (ind === 'path') {
     DTOs.path[name] = parameter;
@@ -233,7 +236,7 @@ function isIdentifier (name) {
   return /^[a-zA-Z_$][0-9a-zA-Z_$]+$/.test(name);
 }
 
-function makeKStringNode (additionalProperties = undefined) {
+function makeKStringNode (typeNode) {
   const param = createParameterDeclaration(
     undefined,
     undefined,
@@ -243,12 +246,7 @@ function makeKStringNode (additionalProperties = undefined) {
     createKeywordTypeNode(SyntaxKind.StringKeyword),
     undefined
   );
-  return createIndexSignature(
-    undefined,
-    undefined,
-    [param],
-    createKeywordTypeNode(SyntaxKind.AnyKeyword)
-  );
+  return createIndexSignature(undefined, undefined, [param], typeNode);
 }
 
 function getHeritageClauses (extendsNodes) {
@@ -287,7 +285,13 @@ function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
   const props = lodash.map(properties, getPropertyNodeExtractor(schema, typeContext, rootName));
 
   if (!props.length) {
-    props.push(makeKStringNode(additionalProperties));
+    props.push(
+      makeKStringNode(
+        additionalProperties
+          ? makeTypeNode(additionalProperties, typeContext, rootName, name, extendsNodes)
+          : createKeywordTypeNode(SyntaxKind.AnyKeyword)
+      )
+    );
   }
 
   const heritageClauses = getHeritageClauses(extendsNodes);
@@ -309,7 +313,7 @@ function typeContextAddEnum (typeContext, node) {
   typeContext.enums.push(node);
 }
 
-function dereferenceInternalRef (typeContext, ref, useDereferenced = false) {
+function dereferenceInternalRef (rootContext, ref, useDereferenced = false) {
   if (ref.substr(0, 2) !== '#/') {
     console.log('invalid ref', ref);
     return { parameter: undefined, name: undefined };
@@ -317,9 +321,7 @@ function dereferenceInternalRef (typeContext, ref, useDereferenced = false) {
   const refPath = ref.replace('#/', '').split(/#?\//);
   const lastName = lodash.last(refPath);
   const name = makeTypeName(lodash.camelCase(lastName));
-  const schema = useDereferenced
-    ? typeContext.rootContext.dereferencedSchema
-    : typeContext.rootContext.jsonSchema;
+  const schema = useDereferenced ? rootContext.dereferencedSchema : rootContext.jsonSchema;
   const parameter = lodash.get(schema, refPath);
   return { name, parameter };
 }
@@ -350,20 +352,21 @@ function isSimpleNode (node) {
 }
 
 function dereferenceInternalRefType (typeContext, ref) {
-  const { name, parameter } = dereferenceInternalRef(typeContext, ref);
+  const { rootContext } = typeContext;
+  const { name, parameter } = dereferenceInternalRef(rootContext, ref);
   if (!parameter) {
     console.log('invalid ref path', ref);
     return createNull();
   }
-  if (!typeContext.rootContext.definitions[name]) {
-    const newTypeContext = makeTypeContext(name, typeContext.rootContext);
-    typeContext.rootContext.definitions[name] = newTypeContext;
+  if (!rootContext.definitions[name]) {
+    const newTypeContext = makeTypeContext(name, rootContext);
+    rootContext.definitions[name] = newTypeContext;
 
     const node = makeTypeNode(parameter, newTypeContext, name, undefined);
     if (isSimpleNode(node)) {
       addType(newTypeContext, name, node);
     }
-    typeContext.rootContext.definitions[name].rootContext = null;
+    rootContext.definitions[name].rootContext = null;
   }
 
   addImport(typeContext, `./${name}`, [name]);
@@ -532,14 +535,14 @@ function makeSubstitutionArrowNode (baseName, parameters, text) {
   );
 }
 
-function makeOptionalAnyParameter (name) {
+function makeOptionalParameter (name, typeNode) {
   return createParameterDeclaration(
     undefined,
     undefined,
     undefined,
     name,
     createToken(SyntaxKind.QuestionToken),
-    createKeywordTypeNode(SyntaxKind.AnyKeyword),
+    typeNode,
     undefined
   );
 }
@@ -559,11 +562,16 @@ function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
     if (lodash.isEmpty(DTOs.query)) {
       apiText = pathApiText;
     } else {
-      parameters.push(makeOptionalAnyParameter('options'));
+      parameters.push(
+        makeOptionalParameter(
+          'options',
+          createTypeReferenceNode(createIdentifier('StringifyOptions'))
+        )
+      );
       apiText = `${pathApiText}?${'${'}stringify({${lodash.map(DTOs.query, (param) =>
         param.name === param.rawName ? param.name : `"${param.rawName}": ${param.name}`
       ).join(', ')}}, options)}`;
-      addImport(typeContext, 'query-string', ['stringify'], true);
+      addImport(typeContext, 'query-string', ['stringify', 'StringifyOptions'], true);
     }
 
     typeContext.endpointNode = makeSubstitutionArrowNode(baseName, parameters, apiText);
@@ -672,7 +680,7 @@ function getResponseNode (methodNode) {
   return { response, responsePath };
 }
 
-function makeDTOs (methodNode) {
+function makeDTOs (rootContext, methodNode) {
   const DTOs = {
     path: {},
     query: {},
@@ -683,7 +691,7 @@ function makeDTOs (methodNode) {
   };
   if (methodNode.parameters) {
     for (const parameter of methodNode.parameters) {
-      processParameter(parameter, DTOs);
+      processParameter(rootContext, parameter, DTOs);
     }
   }
   if (!DTOs.body) {
@@ -699,7 +707,7 @@ function makeDTOs (methodNode) {
 }
 
 async function processPaths (root, rootContext, rootPath) {
-  const { targetDir } = rootContext;
+  const { targetDir, generateJson } = rootContext;
   for (const apiPath in root) {
     const apiNode = root[apiPath];
     console.log(apiPath);
@@ -707,7 +715,7 @@ async function processPaths (root, rootContext, rootPath) {
     for (const method in apiNode) {
       const methodNode = apiNode[method];
 
-      const DTOs = makeDTOs(methodNode);
+      const DTOs = makeDTOs(rootContext, methodNode);
 
       const baseName = `${lodash.camelCase(apiPath)}_${method}`;
       const apiNodes = await processApiMethod(baseName, apiPath, DTOs, rootContext);
@@ -715,7 +723,7 @@ async function processPaths (root, rootContext, rootPath) {
       const apiFileName = path.join(targetDir, `${baseName}.ts`);
       await writeTsFile(apiFileName, apiNodes);
 
-      if (DTOs.response) {
+      if (DTOs.response && generateJson) {
         const responseFileName = path.join(targetDir, `${baseName}_response.schema.json`);
         const fullResponsePath = `${rootPath}["${apiPath}"].${method}.${DTOs.responsePath}.schema`;
         const responseContent = lodash.get(rootContext.dereferencedSchema, fullResponsePath);
@@ -767,16 +775,17 @@ async function traverse (root, context) {
   await processRoot(root, context);
 }
 
-function makeRootContext (targetDir, jsonSchema, dereferencedSchema) {
+function makeRootContext (targetDir, jsonSchema, dereferencedSchema, generateJson) {
   return {
     targetDir,
     jsonSchema,
     dereferencedSchema,
+    generateJson,
     definitions: {}
   };
 }
 
-async function processFile (apiFile, targetDir) {
+async function processFile (apiFile, targetDir, generateJson) {
   try {
     console.log('clear dir', targetDir);
     await rimrafAsync(targetDir);
@@ -797,7 +806,7 @@ async function processFile (apiFile, targetDir) {
       'description',
       'xml'
     ]);
-    const rootContext = makeRootContext(targetDir, jsonSchema, dereferencedSchema);
+    const rootContext = makeRootContext(targetDir, jsonSchema, dereferencedSchema, generateJson);
     console.log('traverse', apiFile);
     await traverse(jsonSchema, rootContext);
 
@@ -819,17 +828,13 @@ async function processFile (apiFile, targetDir) {
   }
 }
 
-const generate = (apiFile, targetDir) => {
-  processFile(apiFile, targetDir);
+const generate = (apiFile, targetDir, generateJson) => {
+  console.log('generate', { apiFile, targetDir, generateJson });
+  processFile(apiFile, targetDir, generateJson);
 };
-
-const SCHEMA_EXT = '.schema.json';
-const SCHEMA_FILES = `/**/*${SCHEMA_EXT}`;
 
 const argv = yargs__default['default'](helpers.hideBin(process.argv))
   .usage('Usage: $0 [options]')
-  // .usage('Usage: $0 <command> [options]')
-  // .command('count', 'Count the lines in a file')
   .example('$0 -f foo.json -o ./api', 'process foo.json and place definitions to ./api folder')
   .alias('f', 'file')
   .nargs('f', 1)
@@ -837,13 +842,12 @@ const argv = yargs__default['default'](helpers.hideBin(process.argv))
   .alias('o', 'out')
   .nargs('o', 1)
   .describe('o', 'output folder')
+  .alias('j', 'json')
+  .boolean('j')
+  .describe('j', 'generate response JSON schema')
   .demandOption(['f', 'o'])
   .help('h')
   .alias('h', 'help')
-  .epilog('copyright 2021')
-  .argv;
+  .epilog('copyright 2021').argv;
 
-generate(path.resolve(argv.file), path.resolve(argv.out));
-
-exports.SCHEMA_EXT = SCHEMA_EXT;
-exports.SCHEMA_FILES = SCHEMA_FILES;
+generate(path.resolve(argv.file), path.resolve(argv.out), argv.json);

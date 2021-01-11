@@ -77,8 +77,13 @@ function makeParameterName (parameter) {
   };
 }
 
-export function processParameter (rawParameter, DTOs) {
-  const parameter = makeParameterName(rawParameter);
+export function processParameter (rootContext, rawParameter, DTOs) {
+  let param = { ...rawParameter };
+  if (param.$ref) {
+    const { name, parameter } = dereferenceInternalRef(rootContext, param.$ref, true);
+    param = { ...parameter, name };
+  }
+  const parameter = makeParameterName(param);
   const { name, in: ind } = parameter;
   if (ind === 'path') {
     DTOs.path[name] = parameter;
@@ -195,7 +200,7 @@ function isIdentifier (name) {
   return /^[a-zA-Z_$][0-9a-zA-Z_$]+$/.test(name);
 }
 
-function makeKStringNode (additionalProperties = undefined) {
+function makeKStringNode (typeNode) {
   const param = createParameterDeclaration(
     undefined,
     undefined,
@@ -205,12 +210,7 @@ function makeKStringNode (additionalProperties = undefined) {
     createKeywordTypeNode(SyntaxKind.StringKeyword),
     undefined
   );
-  return createIndexSignature(
-    undefined,
-    undefined,
-    [param],
-    createKeywordTypeNode(SyntaxKind.AnyKeyword)
-  );
+  return createIndexSignature(undefined, undefined, [param], typeNode);
 }
 
 export function getHeritageClauses (extendsNodes) {
@@ -249,7 +249,13 @@ export function makeInterfaceNode (schema, typeContext, rootName, name, extendsN
   const props = map(properties, getPropertyNodeExtractor(schema, typeContext, rootName));
 
   if (!props.length) {
-    props.push(makeKStringNode(additionalProperties));
+    props.push(
+      makeKStringNode(
+        additionalProperties
+          ? makeTypeNode(additionalProperties, typeContext, rootName, name, extendsNodes)
+          : createKeywordTypeNode(SyntaxKind.AnyKeyword)
+      )
+    );
   }
 
   const heritageClauses = getHeritageClauses(extendsNodes);
@@ -271,7 +277,7 @@ function typeContextAddEnum (typeContext, node) {
   typeContext.enums.push(node);
 }
 
-function dereferenceInternalRef (typeContext, ref, useDereferenced = false) {
+function dereferenceInternalRef (rootContext, ref, useDereferenced = false) {
   if (ref.substr(0, 2) !== '#/') {
     console.log('invalid ref', ref);
     return { parameter: undefined, name: undefined };
@@ -279,9 +285,7 @@ function dereferenceInternalRef (typeContext, ref, useDereferenced = false) {
   const refPath = ref.replace('#/', '').split(/#?\//);
   const lastName = last(refPath);
   const name = makeTypeName(camelCase(lastName));
-  const schema = useDereferenced
-    ? typeContext.rootContext.dereferencedSchema
-    : typeContext.rootContext.jsonSchema;
+  const schema = useDereferenced ? rootContext.dereferencedSchema : rootContext.jsonSchema;
   const parameter = get(schema, refPath);
   return { name, parameter };
 }
@@ -312,20 +316,21 @@ function isSimpleNode (node) {
 }
 
 function dereferenceInternalRefType (typeContext, ref) {
-  const { name, parameter } = dereferenceInternalRef(typeContext, ref);
+  const { rootContext } = typeContext;
+  const { name, parameter } = dereferenceInternalRef(rootContext, ref);
   if (!parameter) {
     console.log('invalid ref path', ref);
     return createNull();
   }
-  if (!typeContext.rootContext.definitions[name]) {
-    const newTypeContext = makeTypeContext(name, typeContext.rootContext);
-    typeContext.rootContext.definitions[name] = newTypeContext;
+  if (!rootContext.definitions[name]) {
+    const newTypeContext = makeTypeContext(name, rootContext);
+    rootContext.definitions[name] = newTypeContext;
 
     const node = makeTypeNode(parameter, newTypeContext, name, undefined);
     if (isSimpleNode(node)) {
       addType(newTypeContext, name, node);
     }
-    typeContext.rootContext.definitions[name].rootContext = null;
+    rootContext.definitions[name].rootContext = null;
   }
 
   addImport(typeContext, `./${name}`, [name]);
@@ -494,14 +499,14 @@ function makeSubstitutionArrowNode (baseName, parameters, text) {
   );
 }
 
-function makeOptionalAnyParameter (name) {
+export function makeOptionalParameter (name, typeNode) {
   return createParameterDeclaration(
     undefined,
     undefined,
     undefined,
     name,
     createToken(SyntaxKind.QuestionToken),
-    createKeywordTypeNode(SyntaxKind.AnyKeyword),
+    typeNode,
     undefined
   );
 }
@@ -521,11 +526,16 @@ export function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
     if (isEmpty(DTOs.query)) {
       apiText = pathApiText;
     } else {
-      parameters.push(makeOptionalAnyParameter('options'));
+      parameters.push(
+        makeOptionalParameter(
+          'options',
+          createTypeReferenceNode(createIdentifier('StringifyOptions'))
+        )
+      );
       apiText = `${pathApiText}?${'${'}stringify({${map(DTOs.query, (param) =>
         param.name === param.rawName ? param.name : `"${param.rawName}": ${param.name}`
       ).join(', ')}}, options)}`;
-      addImport(typeContext, 'query-string', ['stringify'], true);
+      addImport(typeContext, 'query-string', ['stringify', 'StringifyOptions'], true);
     }
 
     typeContext.endpointNode = makeSubstitutionArrowNode(baseName, parameters, apiText);
@@ -634,7 +644,7 @@ export function getResponseNode (methodNode) {
   return { response, responsePath };
 }
 
-export function makeDTOs (methodNode) {
+export function makeDTOs (rootContext, methodNode) {
   const DTOs = {
     path: {},
     query: {},
@@ -645,7 +655,7 @@ export function makeDTOs (methodNode) {
   };
   if (methodNode.parameters) {
     for (const parameter of methodNode.parameters) {
-      processParameter(parameter, DTOs);
+      processParameter(rootContext, parameter, DTOs);
     }
   }
   if (!DTOs.body) {
@@ -661,7 +671,7 @@ export function makeDTOs (methodNode) {
 }
 
 async function processPaths (root, rootContext, rootPath) {
-  const { targetDir } = rootContext;
+  const { targetDir, generateJson } = rootContext;
   for (const apiPath in root) {
     const apiNode = root[apiPath];
     console.log(apiPath);
@@ -669,7 +679,7 @@ async function processPaths (root, rootContext, rootPath) {
     for (const method in apiNode) {
       const methodNode = apiNode[method];
 
-      const DTOs = makeDTOs(methodNode);
+      const DTOs = makeDTOs(rootContext, methodNode);
 
       const baseName = `${camelCase(apiPath)}_${method}`;
       const apiNodes = await processApiMethod(baseName, apiPath, DTOs, rootContext);
@@ -677,7 +687,7 @@ async function processPaths (root, rootContext, rootPath) {
       const apiFileName = join(targetDir, `${baseName}.ts`);
       await writeTsFile(apiFileName, apiNodes);
 
-      if (DTOs.response) {
+      if (DTOs.response && generateJson) {
         const responseFileName = join(targetDir, `${baseName}_response.schema.json`);
         const fullResponsePath = `${rootPath}["${apiPath}"].${method}.${DTOs.responsePath}.schema`;
         const responseContent = get(rootContext.dereferencedSchema, fullResponsePath);
@@ -729,16 +739,17 @@ export async function traverse (root, context) {
   await processRoot(root, context);
 }
 
-export function makeRootContext (targetDir, jsonSchema, dereferencedSchema) {
+export function makeRootContext (targetDir, jsonSchema, dereferencedSchema, generateJson) {
   return {
     targetDir,
     jsonSchema,
     dereferencedSchema,
+    generateJson,
     definitions: {}
   };
 }
 
-export async function processFile (apiFile, targetDir) {
+export async function processFile (apiFile, targetDir, generateJson) {
   try {
     console.log('clear dir', targetDir);
     await rimrafAsync(targetDir);
@@ -759,7 +770,7 @@ export async function processFile (apiFile, targetDir) {
       'description',
       'xml'
     ]);
-    const rootContext = makeRootContext(targetDir, jsonSchema, dereferencedSchema);
+    const rootContext = makeRootContext(targetDir, jsonSchema, dereferencedSchema, generateJson);
     console.log('traverse', apiFile);
     await traverse(jsonSchema, rootContext);
 
@@ -781,6 +792,7 @@ export async function processFile (apiFile, targetDir) {
   }
 }
 
-export const generate = (apiFile, targetDir) => {
-  processFile(apiFile, targetDir);
+export const generate = (apiFile, targetDir, generateJson) => {
+  console.log('generate', { apiFile, targetDir, generateJson });
+  processFile(apiFile, targetDir, generateJson);
 };
