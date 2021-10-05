@@ -20,7 +20,7 @@ import {
   merge,
   isArray,
   partition,
-  isString
+  isString,
 } from 'lodash';
 import { format } from 'prettier';
 
@@ -40,7 +40,11 @@ const {
   createKeywordTypeNode,
   createModifier,
   createArrowFunction,
+  createCallExpression,
+  createPropertyAccessExpression,
   createParameterDeclaration,
+  createPropertyAssignment,
+  createObjectLiteralExpression,
   createNoSubstitutionTemplateLiteral,
   createImportDeclaration,
   createImportClause,
@@ -62,22 +66,22 @@ const {
   createTypeAliasDeclaration,
   createHeritageClause,
   createExpressionWithTypeArguments,
-  createUnionTypeNode
+  createUnionTypeNode,
 } = ts.factory;
 
-function getSchema (parameter) {
+function getSchema(parameter) {
   return get(parameter, 'schema', parameter);
 }
 
-function makeParameterName (parameter) {
+function makeParameterName(parameter) {
   return {
     ...parameter,
     rawName: parameter.name,
-    name: camelCase(parameter.name)
+    name: camelCase(parameter.name),
   };
 }
 
-export function processParameter (rootContext, rawParameter, DTOs) {
+export function processParameter(rootContext, rawParameter, DTOs) {
   let param = { ...rawParameter };
   if (param.$ref) {
     const { name, parameter } = dereferenceInternalRef(rootContext, param.$ref, true);
@@ -96,10 +100,10 @@ export function processParameter (rootContext, rawParameter, DTOs) {
   }
 }
 
-function printTsFile (allNodes, fileName) {
+function printTsFile(allNodes, fileName) {
   const nodes = cleanupNodes(allNodes);
   const printer = ts.createPrinter({
-    newLine: ts.NewLineKind.LineFeed
+    newLine: ts.NewLineKind.LineFeed,
   });
 
   const sourceFile = ts.createSourceFile(
@@ -107,7 +111,7 @@ function printTsFile (allNodes, fileName) {
     '',
     ts.ScriptTarget.ES2017,
     true,
-    ts.ScriptKind.TS
+    ts.ScriptKind.TS,
   );
 
   const codeList = map(nodes, (node) => {
@@ -126,7 +130,7 @@ function printTsFile (allNodes, fileName) {
       ' */',
       '',
       '',
-      ...codeList
+      ...codeList,
     ].join('\n') + '\n';
 
   const content = format(code, {
@@ -141,25 +145,25 @@ function printTsFile (allNodes, fileName) {
     useTabs: false,
     tabWidth: 2,
     semi: true,
-    arrowParens: 'avoid'
+    arrowParens: 'avoid',
   });
   return content;
 }
 
-async function writeTsFile (fileName, allNodes) {
+async function writeTsFile(fileName, allNodes) {
   const content = printTsFile(allNodes, fileName);
   await writeFileAsync(fileName, content);
   console.log(`  wrote ${fileName}`);
 }
 
-function concatName (baseName, name) {
+function concatName(baseName, name) {
   if (!name) {
     return baseName;
   }
   return baseName ? camelCase(`${baseName}-${name}`) : camelCase(name);
 }
 
-function makeEnumFieldValue (value) {
+function makeEnumFieldValue(value) {
   switch (typeof value) {
     case 'boolean':
       return value ? createTrue() : createFalse();
@@ -181,26 +185,27 @@ const makeEnumFieldName = (name, index) => {
   return prepared;
 };
 
-function makeEnumDeclaration (name, values) {
+function makeEnumDeclaration(name, values) {
   return createEnumDeclaration(
     undefined,
     [createModifier(SyntaxKind.ExportKeyword)],
     createIdentifier(name),
     map(values, (value, index) => {
       return createEnumMember(makeEnumFieldName(value, index), makeEnumFieldValue(value));
-    })
+    }),
   );
 }
 
-function makeTypeName (name) {
-  return name.substr(0, 1).toUpperCase() + name.substr(1);
+function makeTypeName(name) {
+  const result = name.substr(0, 1).toUpperCase() + name.substr(1);
+  return isEmpty(result) ? 'Root' : result;
 }
 
-function isIdentifier (name) {
+function isIdentifier(name) {
   return /^[a-zA-Z_$][0-9a-zA-Z_$]+$/.test(name);
 }
 
-function makeKStringNode (typeNode) {
+function makeKStringNode(typeNode) {
   const param = createParameterDeclaration(
     undefined,
     undefined,
@@ -208,24 +213,24 @@ function makeKStringNode (typeNode) {
     'k',
     undefined,
     createKeywordTypeNode(SyntaxKind.StringKeyword),
-    undefined
+    undefined,
   );
   return createIndexSignature(undefined, undefined, [param], typeNode);
 }
 
-export function getHeritageClauses (extendsNodes) {
+export function getHeritageClauses(extendsNodes) {
   if (!extendsNodes) {
     return undefined;
   }
   return [
     createHeritageClause(
       SyntaxKind.ExtendsKeyword,
-      map(extendsNodes, (extendNode) => createExpressionWithTypeArguments(extendNode, undefined))
-    )
+      map(extendsNodes, (extendNode) => createExpressionWithTypeArguments(extendNode, undefined)),
+    ),
   ];
 }
 
-export function getPropertyNodeExtractor (schema, typeContext, rootName) {
+export function getPropertyNodeExtractor(schema, typeContext, rootName) {
   return (property, propName) => {
     const isRequired = get(schema, ['required'], []).includes(propName);
     const nameNode = isIdentifier(propName)
@@ -236,15 +241,15 @@ export function getPropertyNodeExtractor (schema, typeContext, rootName) {
       undefined,
       nameNode,
       isRequired ? undefined : createToken(SyntaxKind.QuestionToken),
-      makeTypeNode(property, typeContext, rootName, propName)
+      makeTypeNode(property, typeContext, rootName, propName),
     );
   };
 }
 
-export function makeInterfaceNode (schema, typeContext, rootName, name, extendsNodes) {
+export function makeInterfaceNode(schema, typeContext, rootName, name, extendsNodes) {
   const additionalProperties = get(schema, ['additionalProperties']);
   const properties = {
-    ...get(schema, ['properties'], {})
+    ...get(schema, ['properties'], {}),
   };
   const props = map(properties, getPropertyNodeExtractor(schema, typeContext, rootName));
 
@@ -253,8 +258,8 @@ export function makeInterfaceNode (schema, typeContext, rootName, name, extendsN
       makeKStringNode(
         additionalProperties
           ? makeTypeNode(additionalProperties, typeContext, rootName, name, extendsNodes)
-          : createKeywordTypeNode(SyntaxKind.AnyKeyword)
-      )
+          : createKeywordTypeNode(SyntaxKind.AnyKeyword),
+      ),
     );
   }
 
@@ -266,18 +271,56 @@ export function makeInterfaceNode (schema, typeContext, rootName, name, extendsN
     createIdentifier(name),
     undefined,
     heritageClauses,
-    props
+    props,
   );
 }
 
-function typeContextAddEnum (typeContext, node) {
+export function getPropertySchemaExtractor(schema, typeContext, rootName) {
+  return (property, propName) => {
+    const isRequired = get(schema, ['required'], []).includes(propName);
+    const name = isIdentifier(propName) ? propName : `'${propName}'`;
+
+    let propertySchema = makeSchemaNode(property, typeContext, rootName, name);
+    if (isRequired) {
+      propertySchema = createCallProperty(propertySchema, 'required');
+    }
+
+    return createPropertyAssignment(name, propertySchema);
+  };
+}
+
+export function makeSchemaRefDeclarationNode(schema, typeContext, rootName, name) {
+  // ...get(schema, ['additionalProperties']),
+  const joiName = `schema_${name}`;
+  const node = makeSchemaNode(schema, typeContext, name, rootName);
+  return createVariableStatement(
+    [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
+    createVariableDeclaration(joiName, undefined, undefined, node),
+  );
+}
+
+export function makeSchemaDeclarationNode(schema, typeContext, rootName, name) {
+  const joiName = `schema_${name}`;
+  const props = map(schema.properties, getPropertySchemaExtractor(schema, typeContext, rootName));
+  return createVariableStatement(
+    [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
+    createVariableDeclaration(
+      joiName,
+      undefined,
+      undefined,
+      joiNode('object', [createObjectLiteralExpression(props)]),
+    ),
+  );
+}
+
+function typeContextAddEnum(typeContext, node) {
   if (find(typeContext.enums, { name: node.name })) {
     return;
   }
   typeContext.enums.push(node);
 }
 
-function dereferenceInternalRef (rootContext, ref, useDereferenced = false) {
+function dereferenceInternalRef(rootContext, ref, useDereferenced = false) {
   if (ref.substr(0, 2) !== '#/') {
     console.log('invalid ref', ref);
     return { parameter: undefined, name: undefined };
@@ -290,7 +333,7 @@ function dereferenceInternalRef (rootContext, ref, useDereferenced = false) {
   return { name, parameter };
 }
 
-function addImport (typeContext, libName, names, addNewLine = false) {
+function addImport(typeContext, libName, names, addNewLine = false) {
   const key = JSON.stringify({ libName, names });
   if (has(typeContext.imported, key)) {
     return;
@@ -303,7 +346,18 @@ function addImport (typeContext, libName, names, addNewLine = false) {
   }
 }
 
-function isSimpleNode (node) {
+function addJoiImport(typeContext, name) {
+  const key = `schema_${name}`;
+  if (has(typeContext.joiImported, key)) {
+    return;
+  }
+
+  const importNode = createImport(`./${name}.joi`, [key]);
+  typeContext.joiImports.push(importNode);
+  typeContext.joiImported[key] = importNode;
+}
+
+function isSimpleNode(node) {
   switch (node.kind) {
     case SyntaxKind.StringKeyword:
     case SyntaxKind.NumberKeyword:
@@ -315,7 +369,14 @@ function isSimpleNode (node) {
   }
 }
 
-function dereferenceInternalRefType (typeContext, ref) {
+function schemaInternalRefType(typeContext, ref) {
+  const { rootContext } = typeContext;
+  const { name } = dereferenceInternalRef(rootContext, ref);
+  addJoiImport(typeContext, name);
+  return createIdentifier(`schema_${name}`);
+}
+
+function dereferenceInternalRefType(typeContext, ref) {
   const { rootContext } = typeContext;
   const { name, parameter } = dereferenceInternalRef(rootContext, ref);
   if (!parameter) {
@@ -338,7 +399,7 @@ function dereferenceInternalRefType (typeContext, ref) {
   return createIdentifier(name);
 }
 
-function allOfSchema (allOf, typeContext, rootName, parentName) {
+function allOfSchema(allOf, typeContext, rootName, parentName) {
   if (!isArray(allOf)) {
     return createNull();
   }
@@ -349,7 +410,7 @@ function allOfSchema (allOf, typeContext, rootName, parentName) {
   const [extendSchemas, implementSchemas] = partition(allOf, (schema) => !!schema.$ref);
 
   const extendsNodes = map(extendSchemas, (schema) =>
-    dereferenceInternalRefType(typeContext, schema.$ref)
+    dereferenceInternalRefType(typeContext, schema.$ref),
   );
   const implementSchema = merge({}, ...implementSchemas);
   const implementNode = makeTypeNode(
@@ -357,12 +418,12 @@ function allOfSchema (allOf, typeContext, rootName, parentName) {
     typeContext,
     rootName,
     parentName,
-    extendsNodes
+    extendsNodes,
   );
   return implementNode;
 }
 
-function oneOfSchema (oneOf, typeContext, rootName, parentName) {
+function oneOfSchema(oneOf, typeContext, rootName, parentName) {
   if (!isArray(oneOf)) {
     return createNull();
   }
@@ -373,14 +434,32 @@ function oneOfSchema (oneOf, typeContext, rootName, parentName) {
   const name = makeTypeName(concatName(rootName, parentName));
   const node = createUnionTypeNode(
     map(oneOf, (schema, index) =>
-      makeTypeNode(schema, typeContext, name, `struct${index > 0 ? index : ''}`)
-    )
+      makeTypeNode(schema, typeContext, name, `struct${index > 0 ? index : ''}`),
+    ),
   );
   addType(typeContext, name, node);
   return createTypeReferenceNode(createIdentifier(name));
 }
 
-function makeTypeNode (parameter, typeContext, rootName, parentName, extendsNodes = undefined) {
+function addJoiSchema(parameter, typeContext, rootName, interfaceName, byRef = true) {
+  const name = `schema_${interfaceName}`;
+
+  let schemaNode = typeContext.joiSchemasByName[name];
+  if (!schemaNode) {
+    if (byRef) {
+      schemaNode = makeSchemaRefDeclarationNode(parameter, typeContext, rootName, interfaceName);
+    } else {
+      schemaNode = makeSchemaDeclarationNode(parameter, typeContext, rootName, interfaceName);
+    }
+
+    typeContext.joiSchemasByName[name] = schemaNode;
+    typeContext.joiSchemas.push(schemaNode);
+  }
+
+  return schemaNode;
+}
+
+function makeTypeNode(parameter, typeContext, rootName, parentName, extendsNodes = undefined) {
   if (!parameter) {
     return null;
   }
@@ -410,7 +489,7 @@ function makeTypeNode (parameter, typeContext, rootName, parentName, extendsNode
   }
   if (parameter.type === 'array') {
     return createArrayTypeNode(
-      makeTypeNode(parameter.items, typeContext, rootName, concatName(parentName, parameter.name))
+      makeTypeNode(parameter.items, typeContext, rootName, concatName(parentName, parameter.name)),
     );
   }
   if (parameter.type === 'object') {
@@ -420,67 +499,162 @@ function makeTypeNode (parameter, typeContext, rootName, parentName, extendsNode
       typeContext,
       rootName,
       interfaceName,
-      extendsNodes
+      extendsNodes,
     );
     typeContext.interfaces.push(interfaceNode);
+
+    addJoiSchema(parameter, typeContext, rootName, interfaceName);
+
     return createTypeReferenceNode(createIdentifier(interfaceName));
   }
   return createKeywordTypeNode(SyntaxKind.AnyKeyword);
 }
 
+function createCallProperty(node, name, args = undefined) {
+  return createCallExpression(createPropertyAccessExpression(node, name), undefined, args);
+}
+
+function joiNode(joiType, args = undefined) {
+  return createCallProperty(createIdentifier('Joi'), joiType, args);
+}
+
+function joiArrayNode(itemsSchema) {
+  return createCallProperty(createCallProperty(createIdentifier('Joi'), 'array'), 'items', [
+    itemsSchema,
+  ]);
+}
+
+function makeSchemaNode(parameter, typeContext, rootName, parentName) {
+  if (!parameter) {
+    return null;
+  }
+  // if (parameter.allOf) {
+  //   return allOfSchema(parameter.allOf, typeContext, rootName, parentName);
+  // }
+  // if (parameter.oneOf) {
+  //   return oneOfSchema(parameter.oneOf, typeContext, rootName, parentName);
+  // }
+  if (parameter.$ref) {
+    return schemaInternalRefType(typeContext, parameter.$ref);
+  }
+  // if (parameter.enum) {
+  //   const enumName = makeTypeName(concatName(rootName, parentName));
+  //   typeContextAddEnum(typeContext, makeEnumDeclaration(enumName, parameter.enum));
+  //
+  //   return createTypeReferenceNode(createIdentifier(enumName));
+  // }
+  if (parameter.type === 'string') {
+    const node = joiNode('string');
+    if (parameter.enum) {
+      return createCallProperty(
+        node,
+        'valid',
+        map(parameter.enum, (value) => createStringLiteral(value, true)),
+      );
+    }
+    return node;
+  }
+  if (parameter.type === 'integer') {
+    return joiNode('number');
+  }
+  if (parameter.type === 'boolean') {
+    return joiNode('boolean');
+  }
+  if (parameter.type === 'array') {
+    return joiArrayNode(
+      makeSchemaNode(
+        parameter.items,
+        typeContext,
+        rootName,
+        concatName(parentName, parameter.name),
+      ),
+    );
+  }
+  if (parameter.type === 'object') {
+    const interfaceName = makeTypeName(concatName(typeContext.rootName, parentName));
+
+    addJoiSchema(parameter, typeContext, rootName, interfaceName, false);
+    const schemaName = `schema_${interfaceName}`;
+    return createIdentifier(schemaName);
+  }
+
+  return createCallExpression(
+    createPropertyAccessExpression(createIdentifier('Joi'), 'any'),
+    undefined,
+    [],
+  );
+}
+
 export const parameterDeclaration = (typeContext) => (parameter) => {
+  const schema = getSchema(parameter);
+  // if (schema.type === 'object')
+  makeSchemaNode(schema, typeContext, typeContext.rootName, parameter.name);
   return createParameterDeclaration(
     undefined,
     undefined,
     undefined,
     parameter.name,
     parameter.required ? undefined : createToken(SyntaxKind.QuestionToken),
-    makeTypeNode(getSchema(parameter), typeContext, typeContext.rootName, parameter.name),
-    undefined
+    makeTypeNode(schema, typeContext, typeContext.rootName, parameter.name),
+    undefined,
   );
 };
 
-function createImport (libName, names) {
+function createImport(libName, names) {
   return createImportDeclaration(
     /* decorators */ undefined,
     /* modifiers */ undefined,
     createImportClause(
       undefined,
       createNamedImports(
-        map(names, (name) => createImportSpecifier(undefined, createIdentifier(name)))
-      )
+        map(names, (name) => createImportSpecifier(undefined, createIdentifier(name))),
+      ),
     ),
-    createStringLiteral(libName, true)
+    createStringLiteral(libName, true),
   );
 }
 
-function makeStringVariable (name, initValue) {
+function createLibImport(libName, name) {
+  return createImportDeclaration(
+    /* decorators */ undefined,
+    /* modifiers */ undefined,
+    createImportClause(undefined, createIdentifier(name), undefined),
+    createStringLiteral(libName, true),
+  );
+}
+
+function makeStringVariable(name, initValue) {
   return createVariableStatement(
     [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
     createVariableDeclaration(
       name,
       undefined,
       createKeywordTypeNode(SyntaxKind.StringKeyword),
-      createStringLiteral(initValue, true)
-    )
+      createStringLiteral(initValue, true),
+    ),
   );
 }
 
-export function makeTypeContext (rootName, rootContext) {
+export function makeTypeContext(rootName, rootContext) {
   return {
     rootContext,
     rootName,
     enums: [],
     imports: [],
+    joiImports: [],
     imported: {},
+    joiImported: {},
     interfaces: [],
+    joiSchemas: [],
+    joiSchemasByName: {},
     types: [],
+    joiTypes: [],
     allTypes: {},
-    endpointNode: undefined
+    endpointNode: undefined,
   };
 }
 
-function makeSubstitutionArrowNode (baseName, parameters, text) {
+function makeSubstitutionArrowNode(baseName, parameters, text) {
   return createVariableStatement(
     [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
     createVariableDeclaration(
@@ -493,13 +667,13 @@ function makeSubstitutionArrowNode (baseName, parameters, text) {
         parameters,
         undefined,
         undefined,
-        createNoSubstitutionTemplateLiteral(text, text)
-      )
-    )
+        createNoSubstitutionTemplateLiteral(text, text),
+      ),
+    ),
   );
 }
 
-export function makeOptionalParameter (name, typeNode) {
+export function makeOptionalParameter(name, typeNode) {
   return createParameterDeclaration(
     undefined,
     undefined,
@@ -507,11 +681,11 @@ export function makeOptionalParameter (name, typeNode) {
     name,
     createToken(SyntaxKind.QuestionToken),
     typeNode,
-    undefined
+    undefined,
   );
 }
 
-export function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
+export function makeEndpointNodes(typeContext, DTOs, baseName, pathApiText) {
   const parameterDeclarationFunc = parameterDeclaration(typeContext);
 
   if (isEmpty(DTOs.path) && isEmpty(DTOs.query)) {
@@ -519,7 +693,7 @@ export function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
   } else {
     const parameters = [
       ...map(DTOs.path, parameterDeclarationFunc),
-      ...map(DTOs.query, parameterDeclarationFunc)
+      ...map(DTOs.query, parameterDeclarationFunc),
     ];
 
     let apiText;
@@ -529,11 +703,11 @@ export function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
       parameters.push(
         makeOptionalParameter(
           'options',
-          createTypeReferenceNode(createIdentifier('StringifyOptions'))
-        )
+          createTypeReferenceNode(createIdentifier('StringifyOptions')),
+        ),
       );
       apiText = `${pathApiText}?${'${'}stringify({${map(DTOs.query, (param) =>
-        param.name === param.rawName ? param.name : `"${param.rawName}": ${param.name}`
+        param.name === param.rawName ? param.name : `"${param.rawName}": ${param.name}`,
       ).join(', ')}}, options)}`;
       addImport(typeContext, 'query-string', ['stringify', 'StringifyOptions'], true);
     }
@@ -543,7 +717,7 @@ export function makeEndpointNodes (typeContext, DTOs, baseName, pathApiText) {
   return typeContext.endpointNode;
 }
 
-function addType (typeContext, name, node) {
+function addType(typeContext, name, node) {
   if (has(typeContext.allTypes, name)) {
     return;
   }
@@ -552,34 +726,39 @@ function addType (typeContext, name, node) {
     [createModifier(SyntaxKind.ExportKeyword)],
     createIdentifier(name),
     undefined,
-    node
+    node,
   );
   typeContext.types.push(typeNode);
   typeContext.allTypes[name] = typeNode;
 }
 
-export function makeBodyNodes (typeContext, DTOs, baseName) {
+export function makeBodyNodes(typeContext, DTOs, baseName) {
   if (!DTOs.body) {
     return;
   }
 
-  const node = makeTypeNode(DTOs.body.schema, typeContext, typeContext.rootName, 'ApiBody');
   const name = makeTypeName(concatName(typeContext.rootName, 'Body'));
+
+  const node = makeTypeNode(DTOs.body.schema, typeContext, typeContext.rootName, 'ApiBody');
   addType(typeContext, name, node);
+
+  addJoiSchema(DTOs.body.schema, typeContext, typeContext.rootName, name);
 }
 
-export function makeResponseNodes (typeContext, DTOs, baseName) {
+export function makeResponseNodes(typeContext, DTOs, baseName) {
   if (!DTOs.response) {
     return;
   }
 
-  const node = makeTypeNode(DTOs.response.schema, typeContext, typeContext.rootName, 'ApiResponse');
   const name = makeTypeName(concatName(typeContext.rootName, 'Response'));
 
+  const node = makeTypeNode(DTOs.response.schema, typeContext, typeContext.rootName, 'ApiResponse');
   addType(typeContext, name, node);
+
+  addJoiSchema(DTOs.response.schema, typeContext, typeContext.rootName, name);
 }
 
-function pushNodes (nodes, list, addNewLine = false) {
+function pushNodes(nodes, list, addNewLine = false) {
   if (list.length) {
     for (const item of list) {
       nodes.push(item);
@@ -590,15 +769,17 @@ function pushNodes (nodes, list, addNewLine = false) {
   }
 }
 
-export function makeApiPathText (apiPath) {
+export function makeApiPathText(apiPath) {
   return apiPath.replace(/{/g, '${');
 }
 
-async function processApiMethod (baseName, apiPath, DTOs, rootContext) {
+async function processApiMethod(baseName, apiPath, DTOs, rootContext) {
   const apiNodes = [];
+  const joiNodes = [];
   const pathApiText = makeApiPathText(apiPath);
-  // const rootName = pathApiText ?
   const typeContext = makeTypeContext(pathApiText, rootContext);
+
+  pushNodes(joiNodes, [createLibImport('joi', 'Joi')], true);
 
   makeEndpointNodes(typeContext, DTOs, baseName, pathApiText);
   makeBodyNodes(typeContext, DTOs, baseName);
@@ -610,24 +791,28 @@ async function processApiMethod (baseName, apiPath, DTOs, rootContext) {
   pushNodes(apiNodes, typeContext.interfaces, true);
   pushNodes(apiNodes, typeContext.types, true);
 
+  pushNodes(joiNodes, typeContext.joiImports, true);
+  pushNodes(joiNodes, typeContext.joiSchemas, true);
+  // pushNodes(joiNodes, typeContext.joiTypes, true);
+
   apiNodes.push('\n');
   apiNodes.push(typeContext.endpointNode);
 
-  return apiNodes;
+  return { apiNodes, joiNodes };
 }
 
-function cleanupNodes (nodes) {
+function cleanupNodes(nodes) {
   return filter(nodes, (node) => !!node);
 }
 
-function getSchemaNode (node, path) {
+function getSchemaNode(node, path) {
   if (has(node, `${path}.schema`)) {
     return get(node, path);
   }
   return undefined;
 }
 
-export function getResponseNode (methodNode) {
+export function getResponseNode(methodNode) {
   let responsePath = 'responses.200.content["application/json"]';
   let response = getSchemaNode(methodNode, responsePath);
   if (!response) {
@@ -644,14 +829,14 @@ export function getResponseNode (methodNode) {
   return { response, responsePath };
 }
 
-export function makeDTOs (rootContext, methodNode) {
+export function makeDTOs(rootContext, methodNode) {
   const DTOs = {
     path: {},
     query: {},
     header: {},
     body: undefined,
     response: undefined,
-    responsePath: undefined
+    responsePath: undefined,
   };
   if (methodNode.parameters) {
     for (const parameter of methodNode.parameters) {
@@ -670,32 +855,7 @@ export function makeDTOs (rootContext, methodNode) {
   return DTOs;
 }
 
-async function processPaths (root, rootContext, rootPath) {
-  const { targetDir, generateJson } = rootContext;
-  for (const apiPath in root) {
-    const apiNode = root[apiPath];
-    console.log(apiPath);
-
-    for (const method in apiNode) {
-      const methodNode = apiNode[method];
-
-      const DTOs = makeDTOs(rootContext, methodNode);
-
-      const baseName = `${camelCase(apiPath)}_${method}`;
-      const apiNodes = await processApiMethod(baseName, apiPath, DTOs, rootContext);
-
-      const apiFileName = join(targetDir, `${baseName}.ts`);
-      await writeTsFile(apiFileName, apiNodes);
-
-      if (DTOs.response && generateJson) {
-        const responseFileName = join(targetDir, `${baseName}_response.schema.json`);
-        const fullResponsePath = `${rootPath}["${apiPath}"].${method}.${DTOs.responsePath}.schema`;
-        const responseContent = get(rootContext.dereferencedSchema, fullResponsePath);
-        await writeFileAsync(responseFileName, JSON.stringify(responseContent, undefined, 2));
-        console.log(`  wrote ${responseFileName}`);
-      }
-    }
-  }
+async function generateDefinitions(rootContext, targetDir) {
   for (const defName in rootContext.definitions) {
     const defContext = rootContext.definitions[defName];
     console.log(defName);
@@ -711,7 +871,63 @@ async function processPaths (root, rootContext, rootPath) {
   }
 }
 
-async function processRoot (root, context) {
+async function generateJoiDefinitions(rootContext, targetDir) {
+  for (const defName in rootContext.definitions) {
+    const defContext = rootContext.definitions[defName];
+    console.log('joi', defName);
+    const defNodes = [];
+    const importNode = createLibImport('joi', 'Joi');
+    pushNodes(defNodes, [importNode], true);
+    defNodes.push('\n');
+    pushNodes(defNodes, defContext.joiImports);
+    defNodes.push('\n');
+
+    pushNodes(defNodes, defContext.joiSchemas, true);
+
+    const defFileName = join(targetDir, `${defName}.joi.ts`);
+    await writeTsFile(defFileName, defNodes);
+  }
+}
+
+async function processPaths(root, rootContext, rootPath) {
+  const { targetDir, generateJson, generateJoi } = rootContext;
+  for (const apiPath in root) {
+    const apiNode = root[apiPath];
+    console.log(apiPath);
+
+    for (const method in apiNode) {
+      const methodNode = apiNode[method];
+
+      const DTOs = makeDTOs(rootContext, methodNode);
+
+      const baseName = `${camelCase(apiPath)}_${method}`;
+      const { apiNodes, joiNodes } = await processApiMethod(baseName, apiPath, DTOs, rootContext);
+
+      const apiFileName = join(targetDir, `${baseName}.ts`);
+      await writeTsFile(apiFileName, apiNodes);
+
+      if (DTOs.response && generateJson) {
+        const fullResponsePath = `${rootPath}["${apiPath}"].${method}.${DTOs.responsePath}.schema`;
+        const responseContent = get(rootContext.dereferencedSchema, fullResponsePath);
+        const responseFileName = join(targetDir, `${baseName}_response.schema.json`);
+        await writeFileAsync(responseFileName, JSON.stringify(responseContent, undefined, 2));
+        console.log(`  wrote ${responseFileName}`);
+      }
+
+      if ((DTOs.response || DTOs.body) && generateJoi && joiNodes.length > 0) {
+        const fileName = join(targetDir, `${baseName}.joi.ts`);
+        await writeTsFile(fileName, joiNodes);
+        console.log(`  wrote ${fileName}`);
+      }
+    }
+  }
+  await generateDefinitions(rootContext, targetDir);
+  if (generateJoi) {
+    await generateJoiDefinitions(rootContext, targetDir);
+  }
+}
+
+async function processRoot(root, context) {
   for (const key in root) {
     const node = root[key];
     switch (key) {
@@ -735,21 +951,28 @@ async function processRoot (root, context) {
   }
 }
 
-export async function traverse (root, context) {
+export async function traverse(root, context) {
   await processRoot(root, context);
 }
 
-export function makeRootContext (targetDir, jsonSchema, dereferencedSchema, generateJson) {
+export function makeRootContext(
+  targetDir,
+  jsonSchema,
+  dereferencedSchema,
+  generateJson,
+  generateJoi,
+) {
   return {
     targetDir,
     jsonSchema,
     dereferencedSchema,
     generateJson,
-    definitions: {}
+    generateJoi,
+    definitions: {},
   };
 }
 
-export async function processFile (apiFile, targetDir, generateJson) {
+export async function processFile(apiFile, targetDir, generateJson, generateJoi) {
   try {
     console.log('clear dir', targetDir);
     await rimrafAsync(targetDir);
@@ -759,8 +982,8 @@ export async function processFile (apiFile, targetDir, generateJson) {
     const parser = new RefParser();
     const refOptions = {
       dereference: {
-        circular: 'ignore'
-      }
+        circular: 'ignore',
+      },
     };
     const jsonSchema = await parser.parse(apiFile, refOptions);
     const dereferencedSchema1 = await parser.dereference(apiFile, refOptions);
@@ -768,9 +991,15 @@ export async function processFile (apiFile, targetDir, generateJson) {
       'example',
       // 'format',
       'description',
-      'xml'
+      'xml',
     ]);
-    const rootContext = makeRootContext(targetDir, jsonSchema, dereferencedSchema, generateJson);
+    const rootContext = makeRootContext(
+      targetDir,
+      jsonSchema,
+      dereferencedSchema,
+      generateJson,
+      generateJoi,
+    );
     console.log('traverse', apiFile);
     await traverse(jsonSchema, rootContext);
 
@@ -781,8 +1010,8 @@ export async function processFile (apiFile, targetDir, generateJson) {
       JSON.stringify(
         omit(rootContext, ['definitions', 'jsonSchema', 'nodes', 'dereferencedSchema']),
         null,
-        2
-      )
+        2,
+      ),
     );
 
     console.log('done');
@@ -792,7 +1021,7 @@ export async function processFile (apiFile, targetDir, generateJson) {
   }
 }
 
-export const generate = (apiFile, targetDir, generateJson) => {
-  console.log('generate', { apiFile, targetDir, generateJson });
-  processFile(apiFile, targetDir, generateJson);
+export const generate = (apiFile, targetDir, generateJson, generateJoi) => {
+  console.log('generate', { apiFile, targetDir, generateJson, generateJoi });
+  processFile(apiFile, targetDir, generateJson, generateJoi);
 };
