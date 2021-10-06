@@ -648,7 +648,7 @@ export function makeTypeContext(rootName, rootContext) {
     joiSchemas: [],
     joiSchemasByName: {},
     types: [],
-    joiTypes: [],
+    // joiTypes: [],
     allTypes: {},
     endpointNode: undefined,
   };
@@ -917,7 +917,7 @@ async function processPaths(root, rootContext, rootPath) {
       if ((DTOs.response || DTOs.body) && generateJoi && joiNodes.length > 0) {
         const fileName = join(targetDir, `${baseName}.joi.ts`);
         await writeTsFile(fileName, joiNodes);
-        console.log(`  wrote ${fileName}`);
+        console.log(`  wrote joi ${fileName}`);
       }
     }
   }
