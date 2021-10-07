@@ -7,20 +7,22 @@ import ts from 'typescript';
 import rimraf from 'rimraf';
 import {
   camelCase,
-  snakeCase,
+  filter,
+  find,
   get,
   has,
-  isEmpty,
-  map,
-  find,
-  last,
-  keys,
-  filter,
-  omit,
-  merge,
   isArray,
-  partition,
+  isEmpty,
   isString,
+  keys,
+  last,
+  map,
+  merge,
+  omit,
+  partition,
+  reduce,
+  snakeCase,
+  uniq,
 } from 'lodash';
 import { format } from 'prettier';
 
@@ -36,6 +38,7 @@ const { SyntaxKind } = ts;
 const {
   createVariableStatement,
   createStringLiteral,
+  createArrayLiteralExpression,
   createVariableDeclaration,
   createKeywordTypeNode,
   createModifier,
@@ -133,7 +136,7 @@ function printTsFile(allNodes, fileName) {
       ...codeList,
     ].join('\n') + '\n';
 
-  const content = format(code, {
+  return format(code, {
     parser: 'typescript',
     bracketSpacing: true,
     jsxBracketSameLine: false,
@@ -147,7 +150,6 @@ function printTsFile(allNodes, fileName) {
     semi: true,
     arrowParens: 'avoid',
   });
-  return content;
 }
 
 async function writeTsFile(fileName, allNodes) {
@@ -289,6 +291,14 @@ export function getPropertySchemaExtractor(schema, typeContext, rootName) {
   };
 }
 
+export function getPropertyJsSchemaExtractor(schema, typeContext, rootName) {
+  return (property, propName) => {
+    const name = isIdentifier(propName) ? propName : `'${propName}'`;
+    let propertySchema = makeJsSchemaNode(property, typeContext, rootName, name);
+    return createPropertyAssignment(name, propertySchema);
+  };
+}
+
 export function makeSchemaRefDeclarationNode(schema, typeContext, rootName, name) {
   // ...get(schema, ['additionalProperties']),
   const joiName = `schema_${name}`;
@@ -310,6 +320,32 @@ export function makeSchemaDeclarationNode(schema, typeContext, rootName, name) {
       undefined,
       joiNode('object', [createObjectLiteralExpression(props)]),
     ),
+  );
+}
+
+export function makeJsSchemaRefDeclarationNode(schema, typeContext, rootName, name) {
+  // ...get(schema, ['additionalProperties']),
+  const joiName = `schema_${name}`;
+  const node = makeJsSchemaNode(schema, typeContext, name, rootName);
+  return createVariableStatement(
+    [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
+    createVariableDeclaration(joiName, undefined, undefined, node),
+  );
+}
+
+export function makeJsSchemaDeclarationNode(schema, typeContext, rootName, name) {
+  const jsName = `schema_${name}`;
+  const props = map(schema.properties, getPropertyJsSchemaExtractor(schema, typeContext, rootName));
+  const required = uniq(
+    reduce(
+      schema.properties,
+      (acc, item, key) => (item.required ? [...acc, key] : acc),
+      get(schema, 'required', []),
+    ),
+  );
+  return createVariableStatement(
+    [createModifier(SyntaxKind.ExportKeyword), createModifier(SyntaxKind.ConstKeyword)],
+    createVariableDeclaration(jsName, undefined, undefined, jsObjectNode(props, required)),
   );
 }
 
@@ -355,6 +391,9 @@ function addJoiImport(typeContext, name) {
   const importNode = createImport(`./${name}.joi`, [key]);
   typeContext.joiImports.push(importNode);
   typeContext.joiImported[key] = importNode;
+
+  const importJsNode = createImport(`./${name}.schema`, [key]);
+  typeContext.jsImports.push(importJsNode);
 }
 
 function isSimpleNode(node) {
@@ -413,14 +452,7 @@ function allOfSchema(allOf, typeContext, rootName, parentName) {
     dereferenceInternalRefType(typeContext, schema.$ref),
   );
   const implementSchema = merge({}, ...implementSchemas);
-  const implementNode = makeTypeNode(
-    implementSchema,
-    typeContext,
-    rootName,
-    parentName,
-    extendsNodes,
-  );
-  return implementNode;
+  return makeTypeNode(implementSchema, typeContext, rootName, parentName, extendsNodes);
 }
 
 function oneOfSchema(oneOf, typeContext, rootName, parentName) {
@@ -457,6 +489,29 @@ function addJoiSchema(parameter, typeContext, rootName, interfaceName, byRef = t
   }
 
   return schemaNode;
+}
+
+function addJsSchema(parameter, typeContext, rootName, interfaceName, byRef = true) {
+  const name = `schema_${interfaceName}`;
+
+  let jsSchemaNode = typeContext.jsSchemasByName[name];
+  if (!jsSchemaNode) {
+    if (byRef) {
+      jsSchemaNode = makeJsSchemaRefDeclarationNode(
+        parameter,
+        typeContext,
+        rootName,
+        interfaceName,
+      );
+    } else {
+      jsSchemaNode = makeJsSchemaDeclarationNode(parameter, typeContext, rootName, interfaceName);
+    }
+
+    typeContext.jsSchemasByName[name] = jsSchemaNode;
+    typeContext.jsSchemas.push(jsSchemaNode);
+  }
+
+  return jsSchemaNode;
 }
 
 function makeTypeNode(parameter, typeContext, rootName, parentName, extendsNodes = undefined) {
@@ -504,6 +559,7 @@ function makeTypeNode(parameter, typeContext, rootName, parentName, extendsNodes
     typeContext.interfaces.push(interfaceNode);
 
     addJoiSchema(parameter, typeContext, rootName, interfaceName);
+    addJsSchema(parameter, typeContext, rootName, interfaceName);
 
     return createTypeReferenceNode(createIdentifier(interfaceName));
   }
@@ -516,6 +572,41 @@ function createCallProperty(node, name, args = undefined) {
 
 function joiNode(joiType, args = undefined) {
   return createCallProperty(createIdentifier('Joi'), joiType, args);
+}
+
+function jsConstSchemaNode(jsSchemaName) {
+  return createPropertyAccessExpression(createIdentifier('jsonToolbox'), jsSchemaName);
+}
+
+function jsObjectNode(props, required = []) {
+  // return createIdentifier('object');
+  return createObjectLiteralExpression([
+    createPropertyAssignment('type', createStringLiteral('object', true)),
+    createPropertyAssignment('properties', createObjectLiteralExpression(props)),
+    ...(required.length
+      ? [
+          createPropertyAssignment(
+            'required',
+            createArrayLiteralExpression(map(required, (prop) => createStringLiteral(prop))),
+          ),
+        ]
+      : []),
+    createPropertyAssignment('default', createObjectLiteralExpression([])),
+    // ...props,
+  ]);
+}
+
+function jsEnumNode(values) {
+  return createCallProperty(createIdentifier('jsonToolbox'), 'enumSchema', [
+    createArrayLiteralExpression(map(values, (item) => createStringLiteral(item))),
+  ]);
+}
+
+function jsArrayNode(schema) {
+  return createCallProperty(createIdentifier('jsonToolbox'), 'arraySchema', [
+    schema,
+    createArrayLiteralExpression([]),
+  ]);
 }
 
 function joiArrayNode(itemsSchema) {
@@ -584,6 +675,51 @@ function makeSchemaNode(parameter, typeContext, rootName, parentName) {
     [],
   );
 }
+function makeJsSchemaNode(parameter, typeContext, rootName, parentName) {
+  if (!parameter) {
+    return null;
+  }
+  // if (parameter.allOf) {
+  //   return allOfSchema(parameter.allOf, typeContext, rootName, parentName);
+  // }
+  // if (parameter.oneOf) {
+  //   return oneOfSchema(parameter.oneOf, typeContext, rootName, parentName);
+  // }
+  if (parameter.$ref) {
+    return schemaInternalRefType(typeContext, parameter.$ref);
+  }
+  if (parameter.type === 'string') {
+    if (parameter.enum) {
+      return jsEnumNode(parameter.enum);
+    }
+    return jsConstSchemaNode('stringSchema');
+  }
+  if (parameter.type === 'integer') {
+    return jsConstSchemaNode('numberSchema');
+  }
+  if (parameter.type === 'boolean') {
+    return jsConstSchemaNode('booleanSchema');
+  }
+  if (parameter.type === 'array') {
+    return jsArrayNode(
+      makeJsSchemaNode(
+        parameter.items,
+        typeContext,
+        rootName,
+        concatName(parentName, parameter.name),
+      ),
+    );
+  }
+  if (parameter.type === 'object') {
+    const interfaceName = makeTypeName(concatName(typeContext.rootName, parentName));
+
+    addJsSchema(parameter, typeContext, rootName, interfaceName, false);
+    const schemaName = `schema_${interfaceName}`;
+    return createIdentifier(schemaName);
+  }
+
+  return jsObjectNode([], []);
+}
 
 export const parameterDeclaration = (typeContext) => (parameter) => {
   const schema = getSchema(parameter);
@@ -641,12 +777,15 @@ export function makeTypeContext(rootName, rootContext) {
     rootName,
     enums: [],
     imports: [],
-    joiImports: [],
     imported: {},
     joiImported: {},
     interfaces: [],
+    joiImports: [],
     joiSchemas: [],
     joiSchemasByName: {},
+    jsImports: [],
+    jsSchemas: [],
+    jsSchemasByName: {},
     types: [],
     // joiTypes: [],
     allTypes: {},
@@ -732,7 +871,7 @@ function addType(typeContext, name, node) {
   typeContext.allTypes[name] = typeNode;
 }
 
-export function makeBodyNodes(typeContext, DTOs, baseName) {
+export function makeBodyNodes(typeContext, DTOs) {
   if (!DTOs.body) {
     return;
   }
@@ -743,9 +882,10 @@ export function makeBodyNodes(typeContext, DTOs, baseName) {
   addType(typeContext, name, node);
 
   addJoiSchema(DTOs.body.schema, typeContext, typeContext.rootName, name);
+  addJsSchema(DTOs.body.schema, typeContext, typeContext.rootName, name);
 }
 
-export function makeResponseNodes(typeContext, DTOs, baseName) {
+export function makeResponseNodes(typeContext, DTOs) {
   if (!DTOs.response) {
     return;
   }
@@ -756,6 +896,7 @@ export function makeResponseNodes(typeContext, DTOs, baseName) {
   addType(typeContext, name, node);
 
   addJoiSchema(DTOs.response.schema, typeContext, typeContext.rootName, name);
+  addJsSchema(DTOs.response.schema, typeContext, typeContext.rootName, name);
 }
 
 function pushNodes(nodes, list, addNewLine = false) {
@@ -770,16 +911,14 @@ function pushNodes(nodes, list, addNewLine = false) {
 }
 
 export function makeApiPathText(apiPath) {
-  return apiPath.replace(/{/g, '${');
+  const path = apiPath.replace(/{/g, '${');
+  return path.replace(/\${([^}]*)}/g, (str) => `\${${camelCase(str)}}`);
 }
 
 async function processApiMethod(baseName, apiPath, DTOs, rootContext) {
   const apiNodes = [];
-  const joiNodes = [];
   const pathApiText = makeApiPathText(apiPath);
   const typeContext = makeTypeContext(pathApiText, rootContext);
-
-  pushNodes(joiNodes, [createLibImport('joi', 'Joi')], true);
 
   makeEndpointNodes(typeContext, DTOs, baseName, pathApiText);
   makeBodyNodes(typeContext, DTOs, baseName);
@@ -791,14 +930,20 @@ async function processApiMethod(baseName, apiPath, DTOs, rootContext) {
   pushNodes(apiNodes, typeContext.interfaces, true);
   pushNodes(apiNodes, typeContext.types, true);
 
+  const joiNodes = [];
+  pushNodes(joiNodes, [createLibImport('joi', 'Joi')], true);
   pushNodes(joiNodes, typeContext.joiImports, true);
   pushNodes(joiNodes, typeContext.joiSchemas, true);
-  // pushNodes(joiNodes, typeContext.joiTypes, true);
+
+  const jsNodes = [];
+  pushNodes(jsNodes, [createLibImport('json-schema-toolbox', 'jsonToolbox')], true);
+  pushNodes(jsNodes, typeContext.jsImports, true);
+  pushNodes(jsNodes, typeContext.jsSchemas, true);
 
   apiNodes.push('\n');
   apiNodes.push(typeContext.endpointNode);
 
-  return { apiNodes, joiNodes };
+  return { apiNodes, joiNodes, jsNodes };
 }
 
 function cleanupNodes(nodes) {
@@ -889,8 +1034,26 @@ async function generateJoiDefinitions(rootContext, targetDir) {
   }
 }
 
+async function generateJsDefinitions(rootContext, targetDir) {
+  for (const defName in rootContext.definitions) {
+    const defContext = rootContext.definitions[defName];
+    console.log('js', defName);
+    const defNodes = [];
+    const importNode = createLibImport('json-schema-toolbox', 'jsonToolbox');
+    pushNodes(defNodes, [importNode], true);
+    defNodes.push('\n');
+    pushNodes(defNodes, defContext.jsImports);
+    defNodes.push('\n');
+
+    pushNodes(defNodes, defContext.jsSchemas, true);
+
+    const defFileName = join(targetDir, `${defName}.schema.ts`);
+    await writeTsFile(defFileName, defNodes);
+  }
+}
+
 async function processPaths(root, rootContext, rootPath) {
-  const { targetDir, generateJson, generateJoi } = rootContext;
+  const { targetDir, generateJson, generateJoi, generateSchema } = rootContext;
   for (const apiPath in root) {
     const apiNode = root[apiPath];
     console.log(apiPath);
@@ -901,7 +1064,12 @@ async function processPaths(root, rootContext, rootPath) {
       const DTOs = makeDTOs(rootContext, methodNode);
 
       const baseName = `${camelCase(apiPath)}_${method}`;
-      const { apiNodes, joiNodes } = await processApiMethod(baseName, apiPath, DTOs, rootContext);
+      const { apiNodes, joiNodes, jsNodes } = await processApiMethod(
+        baseName,
+        apiPath,
+        DTOs,
+        rootContext,
+      );
 
       const apiFileName = join(targetDir, `${baseName}.ts`);
       await writeTsFile(apiFileName, apiNodes);
@@ -919,11 +1087,20 @@ async function processPaths(root, rootContext, rootPath) {
         await writeTsFile(fileName, joiNodes);
         console.log(`  wrote joi ${fileName}`);
       }
+
+      if ((DTOs.response || DTOs.body) && generateSchema && jsNodes.length > 0) {
+        const fileName = join(targetDir, `${baseName}.schema.ts`);
+        await writeTsFile(fileName, jsNodes);
+        console.log(`  wrote jsSchema ${fileName}`);
+      }
     }
   }
   await generateDefinitions(rootContext, targetDir);
   if (generateJoi) {
     await generateJoiDefinitions(rootContext, targetDir);
+  }
+  if (generateSchema) {
+    await generateJsDefinitions(rootContext, targetDir);
   }
 }
 
@@ -961,6 +1138,7 @@ export function makeRootContext(
   dereferencedSchema,
   generateJson,
   generateJoi,
+  generateSchema,
 ) {
   return {
     targetDir,
@@ -968,11 +1146,12 @@ export function makeRootContext(
     dereferencedSchema,
     generateJson,
     generateJoi,
+    generateSchema,
     definitions: {},
   };
 }
 
-export async function processFile(apiFile, targetDir, generateJson, generateJoi) {
+export async function processFile(apiFile, targetDir, generateJson, generateJoi, generateSchema) {
   try {
     console.log('clear dir', targetDir);
     await rimrafAsync(targetDir);
@@ -999,6 +1178,7 @@ export async function processFile(apiFile, targetDir, generateJson, generateJoi)
       dereferencedSchema,
       generateJson,
       generateJoi,
+      generateSchema,
     );
     console.log('traverse', apiFile);
     await traverse(jsonSchema, rootContext);
@@ -1021,7 +1201,7 @@ export async function processFile(apiFile, targetDir, generateJson, generateJoi)
   }
 }
 
-export const generate = (apiFile, targetDir, generateJson, generateJoi) => {
-  console.log('generate', { apiFile, targetDir, generateJson, generateJoi });
-  processFile(apiFile, targetDir, generateJson, generateJoi);
+export const generate = (apiFile, targetDir, generateJson, generateJoi, generateSchema) => {
+  console.log('generate', { apiFile, targetDir, generateJson, generateJoi, generateSchema });
+  processFile(apiFile, targetDir, generateJson, generateJoi, generateSchema);
 };

@@ -18,9 +18,12 @@ const argv = yargs(hideBin(process.argv))
   .alias('i', 'joi')
   .boolean('i')
   .describe('i', 'generate JOI validation code')
+  .alias('s', 'schema')
+  .boolean('s')
+  .describe('s', 'generate JSON schema js generators')
   .demandOption(['f', 'o'])
   .help('h')
   .alias('h', 'help')
   .epilog('copyright 2021').argv;
 
-generate(resolve(argv.file), resolve(argv.out), argv.json, argv.joi);
+generate(resolve(argv.file), resolve(argv.out), argv.json, argv.joi, argv.schema);
